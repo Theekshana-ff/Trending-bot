@@ -1,6 +1,6 @@
 // File: api/futures-agent.js
-// STANDALONE BYBIT V5 LIVE-ONLY 6-STAGE QUANT PIPELINE ENGINE (v1.0)
-// Zero paper-trading code: all balances, positions, and orders interact directly with Bybit V5 Linear API.
+// STANDALONE BYBIT V5 LIVE-ONLY 6-STAGE QUANT PIPELINE ENGINE (v2.0)
+// Fixed: Singapore region (sin1), api.bytick.com automatic fallback, safe JSON response parsing.
 
 const crypto = require('crypto');
 
@@ -23,7 +23,7 @@ let localLockToken = null;
 const localNonceCache = new Map();
 const localRateLimitMap = {};
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
+async function fetchWithTimeout(url, options = {}, timeoutMs = 4000) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -36,6 +36,93 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
   }
 }
 
+async function safeReadJson(res, label = 'Bybit API') {
+  const raw = await res.text();
+  try {
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!res.ok) {
+      throw new Error(`${label} HTTP ${res.status}: ${parsed.retMsg || raw.slice(0, 140)}`);
+    }
+    return parsed;
+  } catch (e) {
+    if (e.message && e.message.startsWith(`${label} HTTP`)) throw e;
+    const region = process.env.VERCEL_REGION || 'unknown';
+    throw new Error(`${label} HTTP ${res.status} [region=${region}] non-JSON response: ${raw.replace(/\s+/g, ' ').slice(0, 140)}`);
+  }
+}
+
+function getBybitBaseUrls() {
+  if (String(process.env.BYBIT_TESTNET || '').trim().toLowerCase() === 'true') {
+    return ['https://api-testnet.bybit.com'];
+  }
+  return ['https://api.bybit.com', 'https://api.bytick.com'];
+}
+
+async function fetchBybitPublicJson(pathWithQuery, timeoutMs = 3000) {
+  const bases = getBybitBaseUrls();
+  let lastErr = null;
+  for (const base of bases) {
+    try {
+      const r = await fetchWithTimeout(`${base}${pathWithQuery}`, {
+        headers: { 'User-Agent': 'BybitQuantBot/2.0', 'Accept': 'application/json' }
+      }, timeoutMs);
+      return await safeReadJson(r, `Bybit Public (${base})`);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('Bybit Public API unreachable.');
+}
+
+async function bybitV5Req(method, pathUrl, payload = null) {
+  const apiKey = (process.env.BYBIT_API_KEY || '').trim();
+  const secret = (process.env.BYBIT_API_SECRET || '').trim();
+  if (!apiKey || !secret) throw new Error('BYBIT_API_KEY and BYBIT_API_SECRET are not configured in Vercel Environment Variables.');
+
+  const bases = getBybitBaseUrls();
+  let lastErr = null;
+
+  for (const base of bases) {
+    const ts = Date.now().toString();
+    const recvWindow = '5000';
+    let url = `${base}${pathUrl}`;
+    let paramStr = '';
+    let body = undefined;
+
+    if (method === 'GET' && payload) {
+      paramStr = Object.keys(payload).sort().map(k => `${k}=${encodeURIComponent(payload[k])}`).join('&');
+      if (paramStr) url += '?' + paramStr;
+    } else if (method === 'POST' && payload) {
+      paramStr = JSON.stringify(payload);
+      body = paramStr;
+    }
+
+    const sig = signBybitV5(apiKey, secret, ts, recvWindow, paramStr);
+    try {
+      const r = await fetchWithTimeout(url, {
+        method,
+        headers: {
+          'X-BAPI-API-KEY': apiKey,
+          'X-BAPI-TIMESTAMP': ts,
+          'X-BAPI-RECV-WINDOW': recvWindow,
+          'X-BAPI-SIGN': sig,
+          'Content-Type': 'application/json',
+          'User-Agent': 'BybitQuantBot/2.0'
+        },
+        body
+      }, 4500);
+
+      const j = await safeReadJson(r, `Bybit V5 (${base})`);
+      if (j.retCode !== 0) throw new Error(`Bybit V5 Error (${j.retCode}): ${j.retMsg || 'Unknown error'}`);
+      return j.result;
+    } catch (e) {
+      lastErr = e;
+      if (String(e.message || '').includes('Bybit V5 Error')) throw e; // real Bybit API error, don't retry
+    }
+  }
+  throw lastErr || new Error('Bybit V5 API unreachable.');
+}
+
 async function redisCmd(command, ...args) {
   const url = (process.env.UPSTASH_REDIS_REST_URL || '').trim().replace(/^["']|["']$/g, '');
   const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim().replace(/^["']|["']$/g, '');
@@ -46,12 +133,9 @@ async function redisCmd(command, ...args) {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify([command, ...args])
     }, 1500);
-    if (!r.ok) {
-      const errTxt = await r.text().catch(() => '');
-      return { ok: false, result: null, source: `REDIS_HTTP_${r.status}: ${errTxt.slice(0, 100)}` };
-    }
-    const j = await r.json();
-    if (j.error) return { ok: false, result: null, source: `REDIS_CMD_ERROR: ${j.error}` };
+    if (!r.ok) return { ok: false, result: null, source: `REDIS_HTTP_${r.status}` };
+    const j = await safeReadJson(r, 'Upstash Redis');
+    if (j.error) return { ok: false, result: null, source: `REDIS_CMD_ERROR` };
     return { ok: true, result: j.result, source: 'UPSTASH_REDIS_VERIFIED' };
   } catch (e) {
     return { ok: false, result: null, source: 'REDIS_UNREACHABLE' };
@@ -80,7 +164,7 @@ async function releaseLock(lockName = 'bybit_live_lock', token = null) {
 }
 
 async function validateRequestNonce(nonce, tsHeader) {
-  if (!nonce || !tsHeader) return { valid: true, mode: 'SKIPPED' };
+  if (!nonce || !tsHeader) return { valid: true };
   const reqTs = Number(tsHeader);
   if (!Number.isFinite(reqTs) || Math.abs(Date.now() - reqTs) > 120000) {
     return { valid: false, reason: 'Request timestamp expired (>120s drift).' };
@@ -111,49 +195,6 @@ const toBybitSymbol = (sym) => {
   const clean = String(sym || 'BTCUSDT').toUpperCase().replace(/[^A-Z0-9]/g, '');
   return clean.endsWith('USDT') ? clean : `${clean}USDT`;
 };
-
-function getBybitBaseUrl() {
-  return String(process.env.BYBIT_TESTNET || '').trim().toLowerCase() === 'true'
-    ? 'https://api-testnet.bybit.com'
-    : 'https://api.bybit.com';
-}
-
-async function bybitV5Req(method, pathUrl, payload = null) {
-  const apiKey = (process.env.BYBIT_API_KEY || '').trim();
-  const secret = (process.env.BYBIT_API_SECRET || '').trim();
-  if (!apiKey || !secret) throw new Error('BYBIT_API_KEY and BYBIT_API_SECRET are not configured in Vercel Environment Variables.');
-
-  const ts = Date.now().toString();
-  const recvWindow = '5000';
-  let url = `${getBybitBaseUrl()}${pathUrl}`;
-  let paramStr = '';
-  let body = undefined;
-
-  if (method === 'GET' && payload) {
-    paramStr = Object.keys(payload).sort().map(k => `${k}=${encodeURIComponent(payload[k])}`).join('&');
-    if (paramStr) url += '?' + paramStr;
-  } else if (method === 'POST' && payload) {
-    paramStr = JSON.stringify(payload);
-    body = paramStr;
-  }
-
-  const sig = signBybitV5(apiKey, secret, ts, recvWindow, paramStr);
-  const r = await fetchWithTimeout(url, {
-    method,
-    headers: {
-      'X-BAPI-API-KEY': apiKey,
-      'X-BAPI-TIMESTAMP': ts,
-      'X-BAPI-RECV-WINDOW': recvWindow,
-      'X-BAPI-SIGN': sig,
-      'Content-Type': 'application/json'
-    },
-    body
-  }, 4500);
-
-  const j = await r.json();
-  if (j.retCode !== 0) throw new Error(`Bybit V5 Error (${j.retCode}): ${j.retMsg || 'Unknown error'}`);
-  return j.result;
-}
 
 async function fetchBybitWalletAndPositions() {
   const [walletRes, posRes] = await Promise.all([
@@ -303,12 +344,10 @@ function calcLiveOrderSize({ availBal, entryPrice, slPrice, qtyStep, minOrderQty
 }
 
 async function getBybitMarketData() {
-  const base = getBybitBaseUrl();
-  const [tRes, iRes] = await Promise.all([
-    fetchWithTimeout(`${base}/v5/market/tickers?category=linear`, {}, 2500),
-    fetchWithTimeout(`${base}/v5/market/instruments-info?category=linear&limit=200`, {}, 2500)
+  const [tj, ij] = await Promise.all([
+    fetchBybitPublicJson('/v5/market/tickers?category=linear', 3000),
+    fetchBybitPublicJson('/v5/market/instruments-info?category=linear&limit=200', 3000)
   ]);
-  const [tj, ij] = await Promise.all([tRes.json(), iRes.json()]);
   const tickers = {}, instMap = {};
   (tj?.result?.list || []).forEach(t => {
     if (!t.symbol?.endsWith('USDT')) return;
@@ -336,13 +375,10 @@ async function fetchKlines(coin, interval = '15m', limit = 90) {
   const sym = toBybitSymbol(coin);
   const tfMap = { '5m': '5', '15m': '15', '1h': '60', '4h': '240', '1d': 'D' };
   const bInt = tfMap[interval] || '15';
-  try {
-    const r = await fetchWithTimeout(`${getBybitBaseUrl()}/v5/market/kline?category=linear&symbol=${sym}&interval=${bInt}&limit=${limit}`, {}, 2200);
-    const j = await r.json();
-    if (j?.result?.list?.length >= 22) {
-      return [...j.result.list].reverse().map(k => [Number(k[0]), Number(k[1]), Number(k[2]), Number(k[3]), Number(k[4]), Number(k[5] || 0)]);
-    }
-  } catch (e) {}
+  const j = await fetchBybitPublicJson(`/v5/market/kline?category=linear&symbol=${sym}&interval=${bInt}&limit=${limit}`, 2500);
+  if (j?.result?.list?.length >= 22) {
+    return [...j.result.list].reverse().map(k => [Number(k[0]), Number(k[1]), Number(k[2]), Number(k[3]), Number(k[4]), Number(k[5] || 0)]);
+  }
   return null;
 }
 
@@ -365,12 +401,9 @@ async function runSixStageScan({ coinMode, manualCoin, humanBias, riskPerTradePc
   }).filter(Boolean).sort((a, b) => Math.abs(b.chgPct) - Math.abs(a.chgPct)).slice(0, 4);
 
   const results = await Promise.all(candidates.map(async cand => {
+    const safeK = (tf, lim) => fetchKlines(cand.coin, tf, lim).catch(() => null);
     const [k1d, k4h, k1h, k15m, k5m] = await Promise.all([
-      fetchKlines(cand.coin, '1d', 60),
-      fetchKlines(cand.coin, '4h', 60),
-      fetchKlines(cand.coin, '1h', 60),
-      fetchKlines(cand.coin, '15m', 90),
-      fetchKlines(cand.coin, '5m', 60)
+      safeK('1d', 60), safeK('4h', 60), safeK('1h', 60), safeK('15m', 90), safeK('5m', 60)
     ]);
     const toClosed = (k) => (Array.isArray(k) && k.length >= 22 ? k.slice(0, -1) : null);
     const c15m = toClosed(k15m);
@@ -445,13 +478,26 @@ module.exports = async (req, res) => {
     const clientIp = String(req.headers?.['x-vercel-forwarded-for'] || req.socket?.remoteAddress || 'local').split(',')[0].trim();
     if (!(await checkRateLimit(clientIp, 90))) return res.status(429).json({ error: 'Rate limit exceeded.' });
 
-    const body = method === 'POST' ? (typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {})) : (req.query || {});
+    let body = {};
+    if (method === 'POST') {
+      if (typeof req.body === 'string') {
+        try { body = JSON.parse(req.body || '{}'); } catch (e) { return res.status(400).json({ error: 'Invalid JSON request body.' }); }
+      } else {
+        body = req.body || {};
+      }
+    } else {
+      body = req.query || {};
+    }
     const action = String(body.action || 'status').trim();
 
     if (action === 'bybit_klines') {
-      const kl = await fetchKlines(body.symbol || 'BTC', body.tf || '15m', 110);
-      const candles = (kl || []).map(k => ({ time: Math.floor(k[0] / 1000), open: k[1], high: k[2], low: k[3], close: k[4] }));
-      return res.status(200).json({ ok: true, candles });
+      try {
+        const kl = await fetchKlines(body.symbol || 'BTC', body.tf || '15m', 110);
+        const candles = (kl || []).map(k => ({ time: Math.floor(k[0] / 1000), open: k[1], high: k[2], low: k[3], close: k[4] }));
+        return res.status(200).json({ ok: true, candles });
+      } catch (e) {
+        return res.status(200).json({ ok: false, candles: [], error: e.message });
+      }
     }
 
     const expectedSecret = (process.env.AGENT_SECRET || '').trim();
@@ -467,7 +513,8 @@ module.exports = async (req, res) => {
 
     const liveArmed = isServerLiveAuthorized();
     const telemetry = {
-      liveTradingStatus: liveArmed ? 'BYBIT_LIVE_ARMED' : 'ENV_GATE_LOCKED'
+      liveTradingStatus: liveArmed ? 'BYBIT_LIVE_ARMED' : 'ENV_GATE_LOCKED',
+      region: process.env.VERCEL_REGION || 'sin1'
     };
 
     if (action === 'status') {
@@ -476,7 +523,13 @@ module.exports = async (req, res) => {
     }
 
     if (action === 'analyze_only') {
-      const acct = await fetchBybitWalletAndPositions();
+      let acct = { wallet: { availableBalance: 0, totalEquity: 0, unrealizedPnl: 0 }, positions: [] };
+      let walletWarning = null;
+      try {
+        acct = await fetchBybitWalletAndPositions();
+      } catch (e) {
+        walletWarning = `Bybit Wallet Sync Warning: ${e.message}`;
+      }
       const scanRes = await runSixStageScan({
         coinMode: body.coinMode || 'auto',
         manualCoin: body.manualCoin || 'SOL',
@@ -485,7 +538,15 @@ module.exports = async (req, res) => {
         availBal: acct.wallet.availableBalance,
         enforceVeto: false
       });
-      return res.status(200).json({ ok: true, decision: scanRes.pick.decision, noTradeReason: scanRes.pick.noTradeReason, systemTelemetry: telemetry, ...acct, ...scanRes });
+      return res.status(200).json({
+        ok: true,
+        decision: scanRes.pick.decision,
+        noTradeReason: scanRes.pick.noTradeReason,
+        walletWarning,
+        systemTelemetry: telemetry,
+        ...acct,
+        ...scanRes
+      });
     }
 
     if (action === 'scan_and_trade') {
