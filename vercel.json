@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/futures-agent.js": {
+      "maxDuration": 30
+    }
+  }
+}

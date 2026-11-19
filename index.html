@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bybit V5 Live Quant Trading Bot — 6-Stage Pipeline</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    body { background-color: #090d16; color: #e2e8f0; font-family: 'Inter', system-ui, sans-serif; }
+    .mono { font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+    .card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; }
+    .stage-active { border-color: #10b981; box-shadow: 0 0 12px rgba(16, 185, 129, 0.18); }
+    .stage-warn { border-color: #f59e0b; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+  </style>
+</head>
+<body class="min-h-screen p-3 md:p-5">
+  <div class="max-w-7xl mx-auto space-y-4">
+
+    <header class="card p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="inline-block w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></span>
+          <h1 class="text-lg md:text-xl font-bold tracking-tight text-white">
+            BYBIT V5 LIVE TRADING BOT
+            <span class="text-xs px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 mono">LIVE ONLY</span>
+          </h1>
+        </div>
+        <p class="text-xs text-slate-400 mt-0.5">6-Stage Pipeline: Scanner → Safety Gate → Sizer → Live Bybit Executor → Logger → Real Equity</p>
+      </div>
+
+      <div class="grid grid-cols-3 gap-2 md:gap-4 text-right mono">
+        <div class="bg-slate-900/90 px-3 py-2 rounded-lg border border-slate-800">
+          <div class="text-[10px] text-slate-400 uppercase">Bybit Available</div>
+          <div id="kpi-balance" class="text-sm md:text-base font-bold text-emerald-400">-- USDT</div>
+        </div>
+        <div class="bg-slate-900/90 px-3 py-2 rounded-lg border border-slate-800">
+          <div class="text-[10px] text-slate-400 uppercase">Unrealized PnL</div>
+          <div id="kpi-pnl" class="text-sm md:text-base font-bold text-slate-200">$0.0000</div>
+        </div>
+        <div class="bg-slate-900/90 px-3 py-2 rounded-lg border border-slate-800">
+          <div class="text-[10px] text-slate-400 uppercase">Live Gate</div>
+          <div id="kpi-gate" class="text-xs md:text-sm font-bold text-amber-400">CHECKING...</div>
+        </div>
+      </div>
+    </header>
+
+    <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+      <div id="stage-1" class="card p-3 transition">
+        <div class="flex justify-between items-center text-[11px] text-slate-400 mono">
+          <span>01 · SCANNER</span>
+          <span id="badge-1" class="text-emerald-400">READY</span>
+        </div>
+        <div id="val-1" class="text-sm font-bold text-white mt-1 mono">TOP-18 USDT</div>
+        <div id="sub-1" class="text-[11px] text-slate-400 mt-0.5 truncate">Closed-candle 5-TF scan</div>
+      </div>
+
+      <div id="stage-2" class="card p-3 transition">
+        <div class="flex justify-between items-center text-[11px] text-slate-400 mono">
+          <span>02 · SAFETY GATE</span>
+          <span id="badge-2" class="text-emerald-400">ACTIVE</span>
+        </div>
+        <div id="val-2" class="text-sm font-bold text-white mt-1 mono">MTF + SPREAD</div>
+        <div id="sub-2" class="text-[11px] text-slate-400 mt-0.5 truncate">5-TF confluence check</div>
+      </div>
+
+      <div id="stage-3" class="card p-3 transition">
+        <div class="flex justify-between items-center text-[11px] text-slate-400 mono">
+          <span>03 · SIZER</span>
+          <span id="badge-3" class="text-emerald-400">RISK-BASED</span>
+        </div>
+        <div id="val-3" class="text-sm font-bold text-white mt-1 mono">QTY: --</div>
+        <div id="sub-3" class="text-[11px] text-slate-400 mt-0.5 truncate">Bybit tickSize &amp; qtyStep</div>
+      </div>
+
+      <div id="stage-4" class="card p-3 transition">
+        <div class="flex justify-between items-center text-[11px] text-slate-400 mono">
+          <span>04 · EXECUTOR</span>
+          <span id="badge-4" class="text-rose-400">LIVE V5</span>
+        </div>
+        <div id="val-4" class="text-sm font-bold text-white mt-1 mono">STANDBY</div>
+        <div id="sub-4" class="text-[11px] text-slate-400 mt-0.5 truncate">Bybit Market + SL/TP</div>
+      </div>
+
+      <div id="stage-5" class="card p-3 transition">
+        <div class="flex justify-between items-center text-[11px] text-slate-400 mono">
+          <span>05 · LOGGER</span>
+          <span id="badge-5" class="text-emerald-400">STREAMING</span>
+        </div>
+        <div id="val-5" class="text-sm font-bold text-white mt-1 mono">AUDIT TRAIL</div>
+        <div id="sub-5" class="text-[11px] text-slate-400 mt-0.5 truncate">Redis lock &amp; nonce guard</div>
+      </div>
+
+      <div id="stage-6" class="card p-3 transition">
+        <div class="flex justify-between items-center text-[11px] text-slate-400 mono">
+          <span>06 · EQUITY</span>
+          <span id="badge-6" class="text-emerald-400">BYBIT LIVE</span>
+        </div>
+        <div id="val-6" class="text-sm font-bold text-emerald-400 mt-1 mono">-- USDT</div>
+        <div id="sub-6" class="text-[11px] text-slate-400 mt-0.5 truncate">Unified account equity</div>
+      </div>
+    </section>
+
+    <section class="card p-4 space-y-3">
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+        <div>
+          <label class="block text-[11px] text-slate-400 mb-1">Agent Password (AGENT_SECRET)</label>
+          <input id="inp-secret" type="password" placeholder="Enter AGENT_SECRET" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white mono focus:outline-none focus:border-emerald-500" />
+        </div>
+
+        <div>
+          <label class="block text-[11px] text-slate-400 mb-1">Coin Selection</label>
+          <div class="flex gap-1.5">
+            <select id="inp-coin-mode" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-xs text-white mono">
+              <option value="auto">Auto</option>
+              <option value="manual">Manual</option>
+            </select>
+            <input id="inp-manual-coin" type="text" value="SOL" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-white mono uppercase" />
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-[11px] text-slate-400 mb-1">Direction Bias</label>
+          <select id="inp-bias" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white mono">
+            <option value="ai_100">AI Both (LONG &amp; SHORT)</option>
+            <option value="long_only">LONG Only</option>
+            <option value="short_only">SHORT Only</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-[11px] text-slate-400 mb-1">Risk % &amp; Leverage</label>
+          <div class="flex gap-1.5">
+            <input id="inp-risk" type="number" step="0.5" min="0.5" max="10" value="3" title="Risk % per trade" class="w-1/2 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-white mono" />
+            <input id="inp-lev" type="number" step="1" min="1" max="20" value="5" title="Leverage" class="w-1/2 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-white mono" />
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-[11px] text-slate-400 mb-1">Live Order Confirmation</label>
+          <label class="flex items-center gap-2 bg-slate-900 border border-rose-500/40 rounded-lg px-3 py-2 text-xs text-rose-300 cursor-pointer select-none">
+            <input id="inp-live-confirm" type="checkbox" class="rounded bg-slate-950 border-rose-500 text-rose-500" />
+            <span class="mono">Arm Real Bybit Orders</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2.5 pt-1">
+        <button id="btn-analyze" class="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs transition cursor-pointer">
+          1. Run 6-Stage Scan
+        </button>
+        <button id="btn-trade" class="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs transition cursor-pointer">
+          2. Execute Live Bybit Trade
+        </button>
+        <button id="btn-autopilot" class="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs transition cursor-pointer">
+          Auto-Scan Loop: OFF
+        </button>
+        <button id="btn-refresh" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition cursor-pointer">
+          Sync Bybit
+        </button>
+        <button id="btn-stop" class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs transition cursor-pointer ml-auto">
+          Emergency Close All
+        </button>
+      </div>
+
+      <div id="status-banner" class="hidden rounded-lg px-3 py-2 text-xs mono border"></div>
+    </section>
+
+    <section class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+      <div class="lg:col-span-7 card p-4 flex flex-col justify-between">
+        <div>
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <div>
+              <h2 id="chart-title" class="text-sm font-bold text-white mono">BTCUSDT.P · 15M CLOSED-CANDLE STRUCTURE</h2>
+              <p id="chart-sub" class="text-[11px] text-slate-400 mono">Waiting for scan...</p>
+            </div>
+            <div class="flex flex-wrap gap-1.5 text-[11px] mono">
+              <span id="pill-entry" class="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300">Entry: --</span>
+              <span id="pill-sl" class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300">SL: --</span>
+              <span id="pill-tp" class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">TP1-TP4: --</span>
+            </div>
+          </div>
+          <div id="tv-chart" class="w-full h-72 rounded-lg overflow-hidden border border-slate-800"></div>
+        </div>
+
+        <div class="grid grid-cols-5 gap-2 mt-3 pt-3 border-t border-slate-800 text-center mono text-xs">
+          <div class="bg-slate-900 p-2 rounded">
+            <div class="text-[10px] text-slate-400">1D MACRO</div>
+            <div id="tf-1d" class="font-bold text-slate-300">--</div>
+          </div>
+          <div class="bg-slate-900 p-2 rounded">
+            <div class="text-[10px] text-slate-400">4H TREND</div>
+            <div id="tf-4h" class="font-bold text-slate-300">--</div>
+          </div>
+          <div class="bg-slate-900 p-2 rounded">
+            <div class="text-[10px] text-slate-400">1H STRUCT</div>
+            <div id="tf-1h" class="font-bold text-slate-300">--</div>
+          </div>
+          <div class="bg-slate-900 p-2 rounded">
+            <div class="text-[10px] text-slate-400">15M SETUP</div>
+            <div id="tf-15m" class="font-bold text-slate-300">--</div>
+          </div>
+          <div class="bg-slate-900 p-2 rounded">
+            <div class="text-[10px] text-slate-400">5M ENTRY</div>
+            <div id="tf-5m" class="font-bold text-slate-300">--</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lg:col-span-5 flex flex-col gap-4">
+        <div class="card p-4 flex-1 flex flex-col">
+          <div class="flex items-center justify-between mb-2">
+            <h2 class="text-xs font-bold uppercase tracking-wider text-emerald-400 mono">&gt;_ LIVE PIPELINE TERMINAL LOGS</h2>
+            <button id="btn-clear-logs" class="text-[11px] text-slate-400 hover:text-white mono">Clear</button>
+          </div>
+          <div id="terminal-logs" class="bg-black/80 border border-slate-800 rounded-lg p-3 h-52 overflow-y-auto mono text-[11px] space-y-1.5 text-slate-300">
+            <div class="text-slate-500">[SYSTEM] Live Bybit V5 Terminal initialized. Enter AGENT_SECRET to sync account.</div>
+          </div>
+        </div>
+
+        <div class="card p-4">
+          <div class="flex items-center justify-between mb-2">
+            <h2 class="text-xs font-bold uppercase tracking-wider text-rose-400 mono">BYBIT LIVE OPEN POSITIONS</h2>
+            <span id="pos-count" class="text-[11px] text-slate-400 mono">0 open</span>
+          </div>
+          <div id="positions-box" class="text-xs mono text-slate-400 bg-slate-900/70 rounded-lg p-3 border border-slate-800">
+            No open Bybit positions.
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+  <script src="/agent.js"></script>
+</body>
+</html>
