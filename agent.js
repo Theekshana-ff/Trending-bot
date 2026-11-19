@@ -1,4 +1,4 @@
-// File: agent.js (v3 — M-03: No browser localStorage secret persistence, M-06: Honest status telemetry)
+// File: agent.js (v5 — Auto Leverage, Max Margin %, Win Rate Donut, Equity Curve & WHY Panel)
 (function () {
   const $ = (id) => document.getElementById(id);
   let chart = null;
@@ -18,12 +18,7 @@
   function showBanner(msg, type = 'info') {
     const b = $('status-banner');
     if (!b) return;
-    b.classList.remove(
-      'hidden',
-      'bg-amber-500/10', 'border-amber-500/40', 'text-amber-300',
-      'bg-emerald-500/10', 'border-emerald-500/40', 'text-emerald-300',
-      'bg-rose-500/10', 'border-rose-500/40', 'text-rose-300'
-    );
+    b.classList.remove('hidden', 'bg-amber-500/10', 'border-amber-500/40', 'text-amber-300', 'bg-emerald-500/10', 'border-emerald-500/40', 'text-emerald-300', 'bg-rose-500/10', 'border-rose-500/40', 'text-rose-300');
     if (type === 'error') b.classList.add('bg-rose-500/10', 'border-rose-500/40', 'text-rose-300');
     else if (type === 'success') b.classList.add('bg-emerald-500/10', 'border-emerald-500/40', 'text-emerald-300');
     else b.classList.add('bg-amber-500/10', 'border-amber-500/40', 'text-amber-300');
@@ -45,7 +40,6 @@
   }
 
   async function callAgent(payload) {
-    // M-03: Never persist AGENT_SECRET in localStorage/sessionStorage
     const secret = ($('inp-secret')?.value || '').trim();
     return await safeFetchJson('/api/futures-agent', {
       method: 'POST',
@@ -80,11 +74,35 @@
       if (j.ok && Array.isArray(j.candles) && j.candles.length && candleSeries) {
         candleSeries.setData(j.candles);
         chart.timeScale().fitContent();
-      } else if (j.error) {
-        logLine('CHART', j.error, 'text-amber-400');
       }
-    } catch (e) {
-      logLine('CHART', e.message, 'text-rose-400');
+    } catch (e) { logLine('CHART', e.message, 'text-rose-400'); }
+  }
+
+  function renderAnalytics(data) {
+    if (data.pnlStats) {
+      const s = data.pnlStats;
+      $('stat-winrate').textContent = `${s.winRate}%`;
+      $('stat-wl').textContent = `${s.wins}W / ${s.losses}L · Best: $${Number(s.bestTrade || 0).toFixed(2)}`;
+      $('stat-closed-pnl').textContent = `Closed PnL: ${s.totalClosedPnl >= 0 ? '+' : ''}$${Number(s.totalClosedPnl || 0).toFixed(2)}`;
+      $('donut-arc')?.setAttribute('stroke-dasharray', `${s.winRate}, 100`);
+    }
+    if (Array.isArray(data.equityCurve) && data.equityCurve.length >= 2) {
+      const vals = data.equityCurve.map(p => p.equity);
+      const minV = Math.min(...vals);
+      const maxV = Math.max(...vals);
+      const span = Math.max(0.01, maxV - minV);
+      const pts = vals.map((v, idx) => {
+        const x = Math.round((idx / (vals.length - 1)) * 240);
+        const y = Math.round(58 - ((v - minV) / span) * 52);
+        return `${x},${y}`;
+      }).join(' ');
+      $('equity-line')?.setAttribute('points', pts);
+    }
+    if (Array.isArray(data.journal) && data.journal.length) {
+      const lastOrder = data.journal.find(j => j.type === 'LIVE_ORDER_OPEN');
+      if (lastOrder) {
+        $('why-box').textContent = `${lastOrder.symbol} ${lastOrder.direction} (${lastOrder.leverage}x Isolated · Margin $${lastOrder.requiredMargin}): ${lastOrder.why || 'Signal verified'}`;
+      }
     }
   }
 
@@ -106,12 +124,12 @@
       $('kpi-gate').className = tel.liveTradingStatus === 'BYBIT_LIVE_ARMED'
         ? 'text-xs md:text-sm font-bold text-emerald-400'
         : 'text-xs md:text-sm font-bold text-rose-400';
-
       const isRedisOk = tel.redisStatus === 'UPSTASH_REDIS_VERIFIED';
       $('badge-5').textContent = isRedisOk ? 'VERIFIED' : 'DEGRADED';
       $('badge-5').className = isRedisOk ? 'text-emerald-400' : 'text-amber-400';
-      $('sub-5').textContent = `${tel.region} · ${tel.redisStatus}`;
+      $('sub-5').textContent = `${tel.region} · ${tel.autoPilotStatus || 'MANUAL'}`;
     }
+    renderAnalytics(data);
   }
 
   function updatePipelineCards(data) {
@@ -122,7 +140,7 @@
     $('badge-1').textContent = 'DONE';
     $('badge-1').className = 'text-emerald-400';
     $('val-1').textContent = `${pick.bybitSymbol} (${pick.direction})`;
-    $('sub-1').textContent = `Quality ${pick.signalQualityScore || 0}/100 · Spread ${pick.spreadPct}%`;
+    $('sub-1').textContent = `Score ${pick.signalQualityScore || 0}/100 · Spread ${pick.spreadPct}%`;
 
     const isNoTrade = pick.decision === 'NO_TRADE';
     $('badge-2').textContent = isNoTrade ? 'REJECTED' : 'PASSED';
@@ -130,12 +148,13 @@
     $('val-2').textContent = `MTF ${pick.mtfConfluenceScore}%`;
     $('sub-2').textContent = pick.noTradeReason || 'All safety gates passed';
 
-    $('badge-3').textContent = pick.orderQty > 0 ? 'SIZED' : 'BLOCKED';
+    $('badge-3').textContent = `${pick.leverage}x ${pick.autoLeverageUsed ? 'AUTO' : 'MAN'}`;
     $('val-3').textContent = `QTY: ${pick.orderQty}`;
-    $('sub-3').textContent = `Step: ${pick.qtyStep} · R:R 1:${pick.rrRatio}`;
+    $('sub-3').textContent = `Margin $${pick.requiredMargin} · R:R 1:${pick.rrRatio}`;
 
     $('val-4').textContent = pick.decision;
     $('sub-4').textContent = `Entry ${pick.entry} · SL ${pick.sl}`;
+    $('why-box').textContent = pick.summaryNote || '';
 
     $('chart-title').textContent = `${pick.bybitSymbol} · ${pick.chartTf.toUpperCase()} (${pick.decision})`;
     $('chart-sub').textContent = pick.summaryNote || '';
@@ -169,9 +188,9 @@
       return `
         <div class="flex items-center justify-between py-2 border-b border-slate-800 last:border-0 gap-2">
           <div>
-            <span class="font-bold ${p.side === 'Buy' ? 'text-emerald-400' : 'text-rose-400'}">${p.symbol} ${p.side === 'Buy' ? 'LONG' : 'SHORT'} (${p.leverage}x)</span>
+            <span class="font-bold ${p.side === 'Buy' ? 'text-emerald-400' : 'text-rose-400'}">${p.symbol} ${p.side === 'Buy' ? 'LONG' : 'SHORT'} (${p.leverage}x ${p.tradeMode === 1 ? 'ISO' : 'CROSS'})</span>
             <div class="text-[11px] text-slate-400">Size: ${p.size} · Entry: ${p.avgPrice} · Mark: ${p.markPrice}</div>
-            <div class="text-[11px] ${pnlColor}">uPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(4)} · SL: ${p.stopLoss || 'NONE'} · TP: ${p.takeProfit || 'NONE'}</div>
+            <div class="text-[11px] ${pnlColor}">uPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(4)} · SL: ${p.stopLoss || 'NONE'} · Trail: ${p.trailingStop || '--'}</div>
           </div>
           <button onclick="window.__closeBybitPos('${p.symbol}')" class="px-2.5 py-1 rounded bg-rose-500/20 hover:bg-rose-500/40 text-rose-300 text-[11px] shrink-0">Close</button>
         </div>
@@ -181,15 +200,11 @@
 
   window.__closeBybitPos = async (symbol) => {
     try {
-      logLine('EXECUTOR', `Closing verified live Bybit position ${symbol}...`, 'text-amber-300');
       const res = await callAgent({ action: 'live_close', symbol });
-      logLine('BYBIT', `Closed ${res.symbol} · Qty ${res.qty} · Order ${res.orderId}`, 'text-emerald-400');
-      showBanner(`Closed live position ${res.symbol} (Order ${res.orderId})`, 'success');
+      logLine('BYBIT', `Closed ${res.symbol} · Order ${res.orderId}`, 'text-emerald-400');
+      showBanner(`Closed live position ${res.symbol}`, 'success');
       await refreshStatus();
-    } catch (e) {
-      logLine('ERROR', e.message, 'text-rose-400');
-      showBanner(e.message, 'error');
-    }
+    } catch (e) { logLine('ERROR', e.message, 'text-rose-400'); showBanner(e.message, 'error'); }
   };
 
   async function refreshStatus() {
@@ -198,9 +213,19 @@
       updateTelemetry(st);
       renderPositions(st.positions || []);
       logLine('BYBIT', `Synced [${st.systemTelemetry?.region}]: $${Number(st.wallet?.availableBalance || 0).toFixed(2)} avail · ${(st.positions || []).length} open pos.`, 'text-sky-300');
-    } catch (e) {
-      logLine('AUTH', `Sync status: ${e.message}`, 'text-amber-400');
-    }
+    } catch (e) { logLine('AUTH', `Sync status: ${e.message}`, 'text-amber-400'); }
+  }
+
+  function getFormParams() {
+    return {
+      coinMode: $('inp-coin-mode').value,
+      manualCoin: $('inp-manual-coin').value,
+      humanBias: $('inp-bias').value,
+      riskPerTradePct: Number($('inp-risk').value || 3) / 100,
+      maxMarginPct: Number($('inp-margin').value || 20) / 100,
+      autoLeverage: $('inp-auto-lev').value === 'true',
+      leverage: Number($('inp-lev').value || 5)
+    };
   }
 
   document.addEventListener('DOMContentLoaded', () => {
@@ -212,43 +237,19 @@
 
     $('btn-analyze')?.addEventListener('click', async () => {
       try {
-        logLine('SCANNER', 'Running 20-module Bybit V5 scan...', 'text-sky-300');
-        const res = await callAgent({
-          action: 'analyze_only',
-          coinMode: $('inp-coin-mode').value,
-          manualCoin: $('inp-manual-coin').value,
-          humanBias: $('inp-bias').value,
-          riskPerTradePct: Number($('inp-risk').value || 3) / 100,
-          leverage: Number($('inp-lev').value || 5)
-        });
+        logLine('SCANNER', 'Running v5 scan with Auto-Leverage & Margin Cap...', 'text-sky-300');
+        const res = await callAgent({ action: 'analyze_only', ...getFormParams() });
         updatePipelineCards(res);
         if (res.walletWarning) logLine('WALLET', res.walletWarning, 'text-amber-400');
-        if (res.decision === 'NO_TRADE') {
-          logLine('SAFETY', res.noTradeReason || 'NO_TRADE', 'text-amber-300');
-          showBanner(res.noTradeReason || 'NO_TRADE', 'info');
-        } else {
-          logLine('SCANNER', res.pick.summaryNote, 'text-emerald-400');
-          showBanner(`Setup Verified: ${res.pick.bybitSymbol} ${res.decision} @ ${res.pick.entry}`, 'success');
-        }
+        showBanner(res.decision === 'NO_TRADE' ? (res.noTradeReason || 'NO_TRADE') : `Setup Verified: ${res.pick.bybitSymbol} ${res.decision} (${res.pick.leverage}x)`, res.decision === 'NO_TRADE' ? 'info' : 'success');
       } catch (e) { logLine('ERROR', e.message, 'text-rose-400'); showBanner(e.message, 'error'); }
     });
 
     $('btn-trade')?.addEventListener('click', async () => {
       try {
-        if (!$('inp-live-confirm').checked) {
-          showBanner('Tick "Arm Real Bybit Orders" first.', 'error');
-          return;
-        }
-        logLine('EXECUTOR', 'Submitting verified LIVE Bybit V5 order...', 'text-rose-300');
-        const res = await callAgent({
-          action: 'scan_and_trade',
-          liveConfirmed: true,
-          coinMode: $('inp-coin-mode').value,
-          manualCoin: $('inp-manual-coin').value,
-          humanBias: $('inp-bias').value,
-          riskPerTradePct: Number($('inp-risk').value || 3) / 100,
-          leverage: Number($('inp-lev').value || 5)
-        });
+        if (!$('inp-live-confirm').checked) { showBanner('Tick "Arm Live" first.', 'error'); return; }
+        logLine('EXECUTOR', 'Submitting LIVE Bybit V5 order (Isolated + Auto-Lev)...', 'text-rose-300');
+        const res = await callAgent({ action: 'scan_and_trade', liveConfirmed: true, ...getFormParams() });
         updatePipelineCards(res);
         logLine('BYBIT', res.exec?.orderTypeLabel || 'Order placed', 'text-emerald-400');
         showBanner(`LIVE ORDER FILLED: ${res.exec?.orderTypeLabel}`, 'success');
@@ -259,11 +260,10 @@
     $('btn-backtest')?.addEventListener('click', async () => {
       try {
         const coin = $('inp-manual-coin').value || 'BTC';
-        logLine('BACKTEST', `Running Walk-Forward validation on ${coin}USDT (15m)...`, 'text-indigo-300');
         const res = await callAgent({ action: 'backtest', manualCoin: coin });
         const wf = res.walkForward;
-        logLine('BACKTEST', `IS: ${wf.inSample?.sampleCount} trades (WR ${wf.inSample?.winRate}%, Exp ${wf.inSample?.expectancyR}R, PF ${wf.inSample?.profitFactor}) | OOS: ${wf.outOfSample?.sampleCount} trades (WR ${wf.outOfSample?.winRate}%, Exp ${wf.outOfSample?.expectancyR}R) | Enabled=${wf.enabled}`, 'text-indigo-300');
-        showBanner(`Walk-Forward (${res.symbol}): OOS Expectancy ${wf.outOfSample?.expectancyR}R · Strategy Enabled=${wf.enabled}`, wf.enabled ? 'success' : 'info');
+        logLine('BACKTEST', `${res.symbol} OOS: ${wf.outOfSample?.sampleCount} trades · WR ${wf.outOfSample?.winRate}% · Exp ${wf.outOfSample?.expectancyR}R · Enabled=${wf.enabled}`, 'text-indigo-300');
+        showBanner(`Walk-Forward (${res.symbol}): OOS Exp ${wf.outOfSample?.expectancyR}R`, wf.enabled ? 'success' : 'info');
       } catch (e) { logLine('ERROR', e.message, 'text-rose-400'); showBanner(e.message, 'error'); }
     });
 
@@ -271,8 +271,8 @@
       if (!confirm('HALT trading, cancel ALL open orders, and close ALL live Bybit positions?')) return;
       try {
         const res = await callAgent({ action: 'emergency_stop' });
-        logLine('EMERGENCY', `Halted=${res.tradingHalted} · Closed ${res.closedCount} positions · CancelledOrders=${res.cancelledOrders}`, 'text-rose-400');
-        showBanner(`Emergency Stop active. Closed ${res.closedCount} live positions.`, 'error');
+        logLine('EMERGENCY', `Halted=${res.tradingHalted} · Closed ${res.closedCount} positions.`, 'text-rose-400');
+        showBanner(`Emergency Stop active. Closed ${res.closedCount} positions.`, 'error');
         await refreshStatus();
       } catch (e) { showBanner(e.message, 'error'); }
     });

@@ -1,8 +1,8 @@
 {
   "name": "bybit-live-trading-bot",
-  "version": "3.0.0",
+  "version": "5.0.0",
   "private": true,
-  "description": "Hardened Standalone Bybit V5 Live-Only 6-Stage Quant Pipeline Trading Bot (20 Modules)",
+  "description": "Bybit V5 Live-Only Quant Bot v5 \u2014 Auto Leverage, Isolated Margin Cap, Trailing Stop & Analytics",
   "engines": {
     "node": "26.x"
   },
