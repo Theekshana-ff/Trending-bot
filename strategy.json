@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "3.0",
+  "mode": "LIVE_BYBIT_V5_ONLY",
+  "auditNote": "Strategies require >=10 out-of-sample trades, expectancyR > 0.10, and profitFactor >= 1.25 after 0.15% fees+slippage before auto-enablement.",
+  "strategies": [
+    {
+      "id": "mtf_smc_15m_v3",
+      "name": "5-TF EMA + SMC Liquidity Sweep + ATR Risk",
+      "enabled": false,
+      "reason": "Requires live Walk-Forward validation via /api/futures-agent?action=backtest before auto-enablement."
+    }
+  ]
+}

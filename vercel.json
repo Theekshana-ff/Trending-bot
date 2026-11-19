@@ -1,8 +1,13 @@
 {
-  "regions": ["sin1"],
+  "regions": [
+    "sin1"
+  ],
   "functions": {
     "api/futures-agent.js": {
       "maxDuration": 30
+    },
+    "api/news.js": {
+      "maxDuration": 15
     }
   }
 }
