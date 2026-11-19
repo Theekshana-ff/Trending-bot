@@ -4,7 +4,7 @@
   "private": true,
   "description": "Hardened Standalone Bybit V5 Live-Only 6-Stage Quant Pipeline Trading Bot (20 Modules)",
   "engines": {
-    "node": "20.x"
+    "node": "26.x"
   },
   "scripts": {
     "check": "node --check api/futures-agent.js && node --check api/news.js && node --check agent.js && node --check lib/modules/marketData.js && node --check lib/modules/indicators.js && node --check lib/modules/structureSmc.js && node --check lib/modules/riskAndValidation.js && node --check lib/modules/aiBrainAndBacktest.js && node --check lib/modules/securityAndState.js && node --check lib/modules/bybitLiveClient.js && node --check tests/run-tests.js",
