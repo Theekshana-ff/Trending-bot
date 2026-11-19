@@ -1,6 +1,6 @@
 {
   "name": "bybit-live-trading-bot",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "description": "Standalone Bybit V5 Live-Only 6-Stage Quant Pipeline Trading Bot",
   "engines": {

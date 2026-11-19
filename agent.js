@@ -1,5 +1,5 @@
 // File: agent.js
-// Frontend controller for Bybit V5 Live-Only 6-Stage Quant Pipeline Terminal
+// Frontend controller for Bybit V5 Live-Only 6-Stage Quant Pipeline Terminal (v2)
 
 (function () {
   const $ = (id) => document.getElementById(id);
@@ -37,6 +37,21 @@
     b.textContent = msg;
   }
 
+  async function safeFetchJson(url, options = {}) {
+    const r = await fetch(url, options);
+    const raw = await r.text();
+    let data = null;
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      throw new Error(`Server HTTP ${r.status} returned non-JSON: ${raw.slice(0, 140)}`);
+    }
+    if (!r.ok) {
+      throw new Error(data.error || data.noTradeReason || `HTTP ${r.status}`);
+    }
+    return data;
+  }
+
   function initChart() {
     const container = $('tv-chart');
     if (!container || typeof LightweightCharts === 'undefined') return;
@@ -54,11 +69,12 @@
 
   async function loadChartCandles(symbol = 'BTC', tf = '15m') {
     try {
-      const r = await fetch(`/api/futures-agent?action=bybit_klines&symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(tf)}`);
-      const j = await r.json();
-      if (j.ok && Array.isArray(j.candles) && candleSeries) {
+      const j = await safeFetchJson(`/api/futures-agent?action=bybit_klines&symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(tf)}`);
+      if (j.ok && Array.isArray(j.candles) && j.candles.length && candleSeries) {
         candleSeries.setData(j.candles);
         chart.timeScale().fitContent();
+      } else if (j.error) {
+        logLine('CHART', j.error, 'text-amber-400');
       }
     } catch (e) {
       logLine('CHART', `Failed to load klines: ${e.message}`, 'text-rose-400');
@@ -73,7 +89,7 @@
     const secret = ($('inp-secret')?.value || localStorage.getItem('agent_secret') || '').trim();
     if (secret) localStorage.setItem('agent_secret', secret);
 
-    const r = await fetch('/api/futures-agent', {
+    return await safeFetchJson('/api/futures-agent', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -83,11 +99,6 @@
       },
       body: JSON.stringify(payload)
     });
-    const data = await r.json();
-    if (!r.ok) {
-      throw new Error(data.error || data.noTradeReason || `HTTP ${r.status}`);
-    }
-    return data;
   }
 
   function updateAccountHeader(data) {
@@ -99,6 +110,9 @@
       $('val-6').textContent = `$${equity} USDT`;
       $('kpi-pnl').textContent = `${uPnl >= 0 ? '+' : ''}$${uPnl.toFixed(4)}`;
       $('kpi-pnl').className = `text-sm md:text-base font-bold ${uPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+    }
+    if (data.systemTelemetry?.region) {
+      $('sub-5').textContent = `Region: ${data.systemTelemetry.region}`;
     }
     if (data.systemTelemetry?.liveTradingStatus) {
       const gate = data.systemTelemetry.liveTradingStatus;
@@ -194,7 +208,7 @@
       const st = await callAgent({ action: 'status' });
       updateAccountHeader(st);
       renderPositions(st.positions || []);
-      logLine('BYBIT', `Synced Unified Wallet: $${Number(st.wallet?.availableBalance || 0).toFixed(2)} avail · ${(st.positions || []).length} open pos.`, 'text-sky-300');
+      logLine('BYBIT', `Synced [${st.systemTelemetry?.region || 'vercel'}]: $${Number(st.wallet?.availableBalance || 0).toFixed(2)} avail · ${(st.positions || []).length} open pos.`, 'text-sky-300');
     } catch (e) {
       logLine('AUTH', `Sync status: ${e.message}`, 'text-amber-400');
     }
@@ -211,6 +225,9 @@
         riskPerTradePct: Number($('inp-risk').value || 3) / 100
       });
       updatePipelineCards(res);
+      if (res.walletWarning) {
+        logLine('WALLET', res.walletWarning, 'text-amber-400');
+      }
       if (res.decision === 'NO_TRADE') {
         logLine('SAFETY', res.noTradeReason || 'NO_TRADE triggered.', 'text-amber-300');
         showBanner(res.noTradeReason || 'NO_TRADE: Waiting for stronger MTF alignment.', 'info');
