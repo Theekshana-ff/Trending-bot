@@ -185,6 +185,24 @@ function mockRes() {
     assert.strictEqual(gProfit.errorCode, 'DAILY_PROFIT_LOCK');
   });
 
+  await test('v8.2: Coin-Specific Live News FUD/Hack Auto-VETO Guard', () => {
+    const { extractBaseCoin, detectCriticalNewsFud } = require('../lib/modules/aiAgent');
+    assert.strictEqual(extractBaseCoin('SOLUSDT'), 'SOL');
+    assert.strictEqual(extractBaseCoin('1000PEPEUSDT'), 'PEPE');
+
+    const badNews = detectCriticalNewsFud({
+      symbol: 'SOLUSDT',
+      headlines: [{ title: 'Breaking: Major SOL protocol hit by $50M exploit and drained', scope: 'COIN' }]
+    });
+    assert.strictEqual(badNews.veto, true);
+
+    const safeNews = detectCriticalNewsFud({
+      symbol: 'SOLUSDT',
+      headlines: [{ title: 'Solana DeFi TVL climbs 12% amid strong network activity', scope: 'COIN' }]
+    });
+    assert.strictEqual(safeNews.veto, false);
+  });
+
   console.log(`\nRESULTS: ${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);
 })();
