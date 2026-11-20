@@ -13,10 +13,10 @@ const {
   safeCompareSecret, makeResponse, acquireLock, releaseLock,
   validateRequestNonce, checkRateLimit, getTradingHalted, setTradingHalted,
   appendJournalEntry, getJournalEntries, getSystemHealth,
-  recordEquitySnapshot, getEquityHistory, checkDailyGuard
+  recordEquitySnapshot, getEquityHistory, checkDailyGuard, requireVerifiedRedis, savePositionMeta
 } = require('../lib/modules/securityAndState');
 const {
-  bybitV5Req, fetchBybitWalletAndPositions, fetchBybitClosedPnlStats,
+  bybitV5Req, fetchBybitWalletAndPositions, cancelStaleLimitOrders, fetchBybitClosedPnlStats,
   configureIsolatedAndLeverage, applyTrailingAndBreakeven,
   closeVerifiedLivePosition, executeLiveEmergencyStop
 } = require('../lib/modules/bybitLiveClient');
@@ -58,7 +58,7 @@ async function getBtcTrendContext() {
 
 async function runSixStagePipeline({
   coinMode, manualCoin, humanBias, timeframe = '15m', entryMode = 'limit_pullback',
-  riskPerTradePct, maxMarginPct, leverage, autoLeverage, availBal, openPositionsCount, enforceVeto
+  riskPerTradePct, maxMarginPct, leverage, autoLeverage, availBal, openPositionsCount, consecutiveLosses = 0, activeSymbols = new Set(), enforceVeto
 }) {
   const primaryTf = ALLOWED_TFS.has(timeframe) ? timeframe : '15m';
   const [{ tickers, instMap }, btcTrend] = await Promise.all([
@@ -150,12 +150,13 @@ async function runSixStagePipeline({
           minNotionalValue: cand.spec.minNotionalValue,
           riskPerTradePct, maxMarginPct, leverage, autoLeverage,
           atrPct: volVol.atrPct, signalQualityScore: preScore,
-          maxLeverage: cand.spec.maxLeverage, openPositionsCount
+          maxLeverage: cand.spec.maxLeverage, openPositionsCount, consecutiveLosses
         })
       : { approved: false, orderQty: 0, leverage: leverage || 5, requiredMargin: 0, reason: levels.reason };
 
     let noTradeReason = null;
-    if (mtf.conflictDetected) noTradeReason = mtf.reason;
+    if (activeSymbols.has(cand.bybitSymbol)) noTradeReason = `NO_TRADE: Active position or pending order already exists for ${cand.bybitSymbol}.`;
+    else if (mtf.conflictDetected) noTradeReason = mtf.reason;
     else if (btcOpposing) noTradeReason = `NO_TRADE: BTC 15m/1h trend is ${btcTrend.trend} (opposes ${cand.coin} ${dir}).`;
     else if (adxFail) noTradeReason = `NO_TRADE: Choppy market (ADX ${volVol.adx} < 22).`;
     else if (!rsiCheck.ok) noTradeReason = rsiCheck.reason;
@@ -218,7 +219,7 @@ async function executeLivePick(pick, sourceTag = 'MANUAL_UI') {
     side,
     orderType: isLimit ? 'Limit' : 'Market',
     qty: String(pick.orderQty),
-    timeInForce: isLimit ? 'GTC' : 'IOC',
+    timeInForce: isLimit ? 'PostOnly' : 'IOC',
     stopLoss: String(pick.sl),
     takeProfit: String(pick.tp),
     positionIdx: 0
@@ -226,6 +227,7 @@ async function executeLivePick(pick, sourceTag = 'MANUAL_UI') {
   if (isLimit) orderPayload.price = String(pick.entry);
 
   const orderRes = await bybitV5Req('POST', '/v5/order/create', orderPayload);
+  await savePositionMeta(pick.bybitSymbol, { entry: pick.entry, initialSl: pick.sl, direction: pick.direction });
 
   const journalEntry = await appendJournalEntry({
     type: 'LIVE_ORDER_OPEN',
@@ -251,7 +253,7 @@ async function executeLivePick(pick, sourceTag = 'MANUAL_UI') {
     `🚀 <b>BYBIT V6 ${orderPayload.orderType.toUpperCase()} ${pick.direction}</b>\n` +
     `Pair: <b>${pick.bybitSymbol}</b> (${pick.chartTf})\n` +
     `Entry: <code>${pick.entry}</code> | SL: <code>${pick.sl}</code> | TP1: <code>${pick.tp1}</code>\n` +
-    `Qty: ${pick.orderQty} | Lev: ${marginConf.leverage}x Isolated | Margin: $${pick.requiredMargin}\n` +
+    `Qty: ${pick.orderQty} | Lev: ${marginConf.leverage}x ${marginConf.marginModeLabel} | Margin: $${pick.requiredMargin}\n` +
     `Score: ${pick.signalQualityScore}/100 | ADX: ${pick.adx} | Pattern: ${pick.pattern}`
   );
 
@@ -259,7 +261,7 @@ async function executeLivePick(pick, sourceTag = 'MANUAL_UI') {
     orderId: orderRes?.orderId || null,
     marginConf,
     journalEntry,
-    orderTypeLabel: `LIVE ${orderPayload.orderType} ${pick.bybitSymbol} ${pick.direction} · Qty ${pick.orderQty} @ ${pick.entry} (${marginConf.leverage}x Iso)`
+    orderTypeLabel: `LIVE ${orderPayload.orderType} ${pick.bybitSymbol} ${pick.direction} · Qty ${pick.orderQty} @ ${pick.entry} (${marginConf.leverage}x ${marginConf.marginModeLabel})`
   };
 }
 
@@ -310,8 +312,13 @@ module.exports = async (req, res) => {
       return res.status(200).json(makeResponse(true, { candles, tf, closedCount: k.closedCandles.length }));
     }
 
-    const maxDailyLossPct = Number(body.maxDailyLossPct || process.env.MAX_DAILY_LOSS_PCT || 5);
-    const dailyProfitTargetPct = Number(body.dailyProfitTargetPct || process.env.DAILY_PROFIT_TARGET_PCT || 10);
+    const envMaxDailyLoss = Number(process.env.MAX_DAILY_LOSS_PCT || 5);
+    const envMaxRiskPct = Number(process.env.MAX_RISK_PER_TRADE_PCT || 0.02);
+    const envMaxMarginPct = Number(process.env.MAX_MARGIN_PCT || 0.20);
+    const maxDailyLossPct = Math.min(envMaxDailyLoss, Math.max(0.5, Number(body.maxDailyLossPct || envMaxDailyLoss)));
+    const dailyProfitTargetPct = Math.max(1, Number(body.dailyProfitTargetPct || process.env.DAILY_PROFIT_TARGET_PCT || 10));
+    const cappedRiskPct = Math.min(envMaxRiskPct, Math.max(0.0025, Number(body.riskPerTradePct || 0.015)));
+    const cappedMarginPct = Math.min(envMaxMarginPct, Math.max(0.05, Number(body.maxMarginPct || 0.20)));
 
     // Cron Guardian: Monitors positions, Partial TP1 (50%), Breakeven/Trailing Stop, Daily Lock, Auto-Pilot & Telegram
     if (action === 'cron_tick') {
@@ -320,7 +327,7 @@ module.exports = async (req, res) => {
       if (!expectedCron || !safeCompareSecret(providedCron, expectedCron)) {
         return res.status(401).json(makeResponse(false, { error: 'Unauthorized: Valid CRON_SECRET required.' }, { errorCode: 'CRON_UNAUTHORIZED' }));
       }
-      const lock = await acquireLock('bybit_cron_guardian_lock', 25000);
+      const lock = await acquireLock('bybit_cron_guardian_lock', 35000);
       if (!lock.acquired) return res.status(409).json(makeResponse(false, { error: lock.reason }, { errorCode: 'CRON_LOCKED' }));
 
       try {
@@ -332,7 +339,10 @@ module.exports = async (req, res) => {
         await recordEquitySnapshot(acct.wallet.totalEquity);
         const dailyGuard = await checkDailyGuard(acct.wallet.totalEquity, { maxDailyLossPct, dailyProfitTargetPct });
 
-        const trailingUpdates = await applyTrailingAndBreakeven(acct.positions, mkt.instMap || {});
+        const [trailingUpdates, cancelledStale] = await Promise.all([
+          applyTrailingAndBreakeven(acct.positions, mkt.instMap || {}),
+          cancelStaleLimitOrders(acct.openOrders || [], 45)
+        ]);
         for (const u of trailingUpdates) {
           if (u.action === 'PARTIAL_TP1_50PCT_LOCKED') {
             await sendTelegramAlert(`💰 <b>PARTIAL TP1 LOCKED (50%)</b>\nPair: <b>${u.symbol}</b>\nClosed Qty: ${u.closedQty} at +${u.rMultiple}R`);
@@ -343,12 +353,15 @@ module.exports = async (req, res) => {
 
         const unprotected = acct.positions.filter(p => !p.hasSlProtection).map(p => p.symbol);
         let autoExecResult = null;
-        if (!haltedState.halted && !dailyGuard.locked && isServerLiveAuthorized() && isAutoExecuteEnabled() && acct.positions.length < 3) {
+        const redisOk = (await requireVerifiedRedis()).ok;
+        const activeSymbols = new Set([...acct.positions.map(p => p.symbol), ...(acct.openOrders || []).map(o => o.symbol)]);
+        const totalExposureCount = acct.positions.length + (acct.openOrders || []).length;
+        if (redisOk && !haltedState.halted && !dailyGuard.locked && isServerLiveAuthorized() && isAutoExecuteEnabled() && totalExposureCount < 3) {
           try {
             const scanRes = await runSixStagePipeline({
               coinMode: 'auto', humanBias: 'ai_100', timeframe: '15m', entryMode: 'limit_pullback',
-              riskPerTradePct: 0.03, maxMarginPct: 0.20, autoLeverage: true,
-              availBal: acct.wallet.availableBalance, openPositionsCount: acct.positions.length, enforceVeto: true
+              riskPerTradePct: cappedRiskPct, maxMarginPct: cappedMarginPct, autoLeverage: true,
+              availBal: acct.wallet.availableBalance, openPositionsCount: totalExposureCount, activeSymbols, enforceVeto: true
             });
             if (scanRes.pick.signalQualityScore >= 75) {
               autoExecResult = await executeLivePick(scanRes.pick, 'CRON_AUTOPILOT');
@@ -459,8 +472,8 @@ module.exports = async (req, res) => {
         humanBias: body.humanBias || 'ai_100',
         timeframe: body.timeframe || '15m',
         entryMode: body.entryMode || 'limit_pullback',
-        riskPerTradePct: Number(body.riskPerTradePct || 0.03),
-        maxMarginPct: Number(body.maxMarginPct || 0.20),
+        riskPerTradePct: cappedRiskPct,
+        maxMarginPct: cappedMarginPct,
         leverage: Number(body.leverage || 5),
         autoLeverage: body.autoLeverage !== false,
         availBal: acct.wallet.availableBalance,
@@ -486,11 +499,15 @@ module.exports = async (req, res) => {
       if (!liveArmed) return res.status(403).json(makeResponse(false, { error: 'SERVER_LIVE_GATE_LOCKED: Set ALLOW_LIVE_TRADING=true.' }, { errorCode: 'LIVE_GATE_LOCKED' }));
       if (body.liveConfirmed !== true) return res.status(403).json(makeResponse(false, { error: 'LIVE_CONFIRMATION_MISSING: Tick Arm Live.' }, { errorCode: 'CONFIRMATION_MISSING' }));
 
-      const lock = await acquireLock('bybit_live_trade_lock', 15000);
+      const redisCheck = await requireVerifiedRedis();
+      if (!redisCheck.ok) return res.status(503).json(makeResponse(false, { error: redisCheck.reason }, { errorCode: redisCheck.errorCode }));
+      const lock = await acquireLock('bybit_live_trade_lock', 35000);
       if (!lock.acquired) return res.status(409).json(makeResponse(false, { error: lock.reason }, { errorCode: 'LOCK_BUSY' }));
 
       try {
-        const acct = await fetchBybitWalletAndPositions();
+        const [acct, pnlStatsPre] = await Promise.all([fetchBybitWalletAndPositions(), fetchBybitClosedPnlStats(20)]);
+        const activeSymbols = new Set([...acct.positions.map(p => p.symbol), ...(acct.openOrders || []).map(o => o.symbol)]);
+        const totalExposureCount = acct.positions.length + (acct.openOrders || []).length;
         const dailyGuard = await checkDailyGuard(acct.wallet.totalEquity, { maxDailyLossPct, dailyProfitTargetPct });
         if (dailyGuard.locked) {
           await sendTelegramAlert(`⛔ <b>${dailyGuard.errorCode}</b>\n${dailyGuard.reason}`);
@@ -503,12 +520,14 @@ module.exports = async (req, res) => {
           humanBias: body.humanBias || 'ai_100',
           timeframe: body.timeframe || '15m',
           entryMode: body.entryMode || 'limit_pullback',
-          riskPerTradePct: Number(body.riskPerTradePct || 0.03),
-          maxMarginPct: Number(body.maxMarginPct || 0.20),
+          riskPerTradePct: cappedRiskPct,
+          maxMarginPct: cappedMarginPct,
           leverage: Number(body.leverage || 5),
           autoLeverage: body.autoLeverage !== false,
           availBal: acct.wallet.availableBalance,
-          openPositionsCount: acct.positions.length,
+          openPositionsCount: totalExposureCount,
+          consecutiveLosses: pnlStatsPre.consecutiveLosses || 0,
+          activeSymbols,
           enforceVeto: true
         });
         const [fearGreed, newsRes, pnlStats] = await Promise.all([
@@ -532,7 +551,6 @@ module.exports = async (req, res) => {
     }
 
     if (action === 'live_close') {
-      if (!isServerLiveAuthorized()) return res.status(403).json(makeResponse(false, { error: 'ALLOW_LIVE_TRADING=true required.' }, { errorCode: 'LIVE_GATE_LOCKED' }));
       const closeRes = await closeVerifiedLivePosition(body.symbol);
       if (!closeRes.closed) return res.status(404).json(makeResponse(false, { error: closeRes.reason }, { errorCode: closeRes.errorCode }));
       await appendJournalEntry({ type: 'LIVE_ORDER_CLOSE', ...closeRes });
@@ -541,12 +559,11 @@ module.exports = async (req, res) => {
     }
 
     if (action === 'emergency_stop') {
-      if (!isServerLiveAuthorized()) return res.status(403).json(makeResponse(false, { error: 'ALLOW_LIVE_TRADING=true required.' }, { errorCode: 'LIVE_GATE_LOCKED' }));
       const haltState = await setTradingHalted(true);
       const stopRes = await executeLiveEmergencyStop();
       await appendJournalEntry({ type: 'EMERGENCY_STOP', ...stopRes });
       await sendTelegramAlert(`🚨 <b>EMERGENCY STOP TRIGGERED</b>\nClosed ${stopRes.closedCount} positions. Trading HALTED.`);
-      const allSucceeded = stopRes.failed.length === 0;
+      const allSucceeded = stopRes.failed.length === 0 && stopRes.cancelledOrders;
       return res.status(allSucceeded ? 200 : 207).json(makeResponse(allSucceeded, { tradingHalted: haltState.halted, ...stopRes }, { errorCode: allSucceeded ? null : 'PARTIAL_EMERGENCY_STOP' }));
     }
 
