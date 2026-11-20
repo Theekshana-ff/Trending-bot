@@ -185,4 +185,6 @@ function mockRes() {
     assert.strictEqual(gProfit.errorCode, 'DAILY_PROFIT_LOCK');
   });
 
+  console.log(`\nRESULTS: ${passed} passed, ${failed} failed`);
+  if (failed > 0) process.exit(1);
 })();
