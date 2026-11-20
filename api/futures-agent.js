@@ -364,7 +364,22 @@ module.exports = async (req, res) => {
               availBal: acct.wallet.availableBalance, openPositionsCount: totalExposureCount, activeSymbols, enforceVeto: true
             });
             if (scanRes.pick.signalQualityScore >= 75) {
-              autoExecResult = await executeLivePick(scanRes.pick, 'CRON_AUTOPILOT');
+              const [fearGreed, newsRes, pnlStats] = await Promise.all([
+                fetchFearAndGreed(),
+                fetchLiveCryptoHeadlines(6, scanRes.pick.bybitSymbol),
+                fetchBybitClosedPnlStats(10).catch(() => ({ recent: [] }))
+              ]);
+              const aiReview = await runAiSecondOpinion({
+                pick: scanRes.pick, fearGreed, headlines: newsRes.headlines, recentClosed: pnlStats.recent || []
+              });
+              if (aiReview.used && aiReview.approve === false) {
+                autoExecResult = { vetoed: true, provider: aiReview.provider, reason: aiReview.summary, newsSentiment: aiReview.newsSentiment };
+                await appendJournalEntry({ type: 'AI_NEWS_VETO', source: 'CRON_AUTOPILOT', symbol: scanRes.pick.bybitSymbol, direction: scanRes.pick.direction, ...autoExecResult });
+                await sendTelegramAlert(`🚫 <b>AUTO-VETO (LIVE NEWS / AI)</b>\nPair: <b>${scanRes.pick.bybitSymbol}</b> (${scanRes.pick.direction})\nSource: ${aiReview.provider}\nReason: ${aiReview.summary}`);
+              } else {
+                autoExecResult = await executeLivePick(scanRes.pick, 'CRON_AUTOPILOT');
+                autoExecResult.aiReview = aiReview;
+              }
             }
           } catch (e) {
             autoExecResult = { skipped: true, reason: e.message };
@@ -482,7 +497,7 @@ module.exports = async (req, res) => {
       });
       const [fearGreed, newsRes, pnlStats] = await Promise.all([
         fetchFearAndGreed(),
-        fetchLiveCryptoHeadlines(5),
+        fetchLiveCryptoHeadlines(6, scanRes.pick.bybitSymbol),
         fetchBybitClosedPnlStats(10).catch(() => ({ recent: [] }))
       ]);
       const aiReview = await runAiSecondOpinion({
@@ -532,17 +547,19 @@ module.exports = async (req, res) => {
         });
         const [fearGreed, newsRes, pnlStats] = await Promise.all([
           fetchFearAndGreed(),
-          fetchLiveCryptoHeadlines(5),
+          fetchLiveCryptoHeadlines(6, scanRes.pick.bybitSymbol),
           fetchBybitClosedPnlStats(10).catch(() => ({ recent: [] }))
         ]);
         const aiReview = await runAiSecondOpinion({
           pick: scanRes.pick, fearGreed, headlines: newsRes.headlines, recentClosed: pnlStats.recent || []
         });
         if (aiReview.used && aiReview.approve === false) {
+          await appendJournalEntry({ type: 'AI_NEWS_VETO', source: 'MANUAL_UI', symbol: scanRes.pick.bybitSymbol, direction: scanRes.pick.direction, provider: aiReview.provider, reason: aiReview.summary });
+          await sendTelegramAlert(`🚫 <b>TRADE VETOED (LIVE NEWS / AI)</b>\nPair: <b>${scanRes.pick.bybitSymbol}</b> (${scanRes.pick.direction})\nSource: ${aiReview.provider}\nReason: ${aiReview.summary}`);
           throw new Error(`AI_VETO (${aiReview.provider}): ${aiReview.summary}`);
         }
         const exec = await executeLivePick(scanRes.pick, 'MANUAL_UI');
-        return res.status(200).json(makeResponse(true, { systemTelemetry: telemetry, dailyGuard, pick: scanRes.pick, exec }));
+        return res.status(200).json(makeResponse(true, { systemTelemetry: telemetry, dailyGuard, aiReview, pick: scanRes.pick, exec }));
       } catch (err) {
         return res.status(400).json(makeResponse(false, { decision: 'NO_TRADE', error: err.message }, { errorCode: 'TRADE_REJECTED' }));
       } finally {
