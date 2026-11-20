@@ -1,6 +1,6 @@
 {
   "name": "bybit-live-trading-bot",
-  "version": "8.2.0",
+  "version": "8.3.0",
   "private": true,
   "description": "Bybit V5 Live Quant Bot v8 \u2014 Production-Hardened (Fail-Closed Redis, Idempotent Orders, Kill Switch)",
   "engines": {
