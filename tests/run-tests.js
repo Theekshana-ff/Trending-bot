@@ -154,4 +154,35 @@ function mockRes() {
 
   console.log(`\nSUMMARY: ${passed} passed, ${failed} failed.`);
   if (failed > 0) process.exit(1);
+
+  await test('v6: ADX, RSI Guard, S/R Proximity, OI Squeeze & Pullback Limit Entry', () => {
+    const { calcADX, checkRsiGuard } = require('../lib/modules/indicators');
+    const { checkSrProximity, detectChartPatterns, analyzeMarketStructure } = require('../lib/modules/structureSmc');
+    const { checkOiFundingSqueeze } = require('../lib/modules/riskAndValidation');
+
+    const c = makeSyntheticCandles(60, 100, 0.5);
+    const adx = calcADX(c.map(x => x[2]), c.map(x => x[3]), c.map(x => x[4]), 14);
+    assert.ok(Number.isFinite(adx.adx));
+    assert.strictEqual(checkRsiGuard(78, 'LONG').ok, false);
+    assert.strictEqual(checkRsiGuard(22, 'SHORT').ok, false);
+    assert.strictEqual(checkRsiGuard(55, 'LONG').ok, true);
+    assert.strictEqual(checkSrProximity(100, 'LONG', [95], [100.2]).ok, false);
+    assert.strictEqual(checkOiFundingSqueeze({ direction: 'LONG', fundingRate: 0.0008, oiChangePct: 5 }).ok, false);
+    const st = analyzeMarketStructure(c);
+    const pat = detectChartPatterns(c, st);
+    assert.ok(typeof pat.pattern === 'string');
+  });
+
+  await test('v6: Daily Max Loss & Profit Lock', async () => {
+    const { checkDailyGuard } = require('../lib/modules/securityAndState');
+    const g1 = await checkDailyGuard(1000, { maxDailyLossPct: 5, dailyProfitTargetPct: 10 });
+    assert.strictEqual(g1.locked, false);
+    const gLoss = await checkDailyGuard(940, { maxDailyLossPct: 5, dailyProfitTargetPct: 10 });
+    assert.strictEqual(gLoss.locked, true);
+    assert.strictEqual(gLoss.errorCode, 'DAILY_LOSS_LOCK');
+    const gProfit = await checkDailyGuard(1120, { maxDailyLossPct: 5, dailyProfitTargetPct: 10 });
+    assert.strictEqual(gProfit.locked, true);
+    assert.strictEqual(gProfit.errorCode, 'DAILY_PROFIT_LOCK');
+  });
+
 })();
