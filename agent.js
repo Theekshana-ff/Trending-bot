@@ -254,8 +254,8 @@
       maxMarginPct: Number($('inp-margin').value || 20) / 100,
       maxDailyLossPct: Number($('inp-daily-loss').value || 5),
       dailyProfitTargetPct: Number($('inp-daily-profit').value || 10),
-      autoLeverage: $('inp-auto-lev').value === 'true',
-      leverage: 5
+      autoLeverage: $('inp-auto-lev').value === 'auto' || $('inp-auto-lev').value === 'true',
+      leverage: ($('inp-auto-lev').value === 'auto' || $('inp-auto-lev').value === 'true') ? 5 : Math.min(20, Math.max(5, Number($('inp-auto-lev').value) || 5))
     };
   }
 
