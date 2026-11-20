@@ -238,6 +238,15 @@ function mockRes() {
     assert.strictEqual(wf.leakageFree, true);
   });
 
+  await test('v8.3.1: Manual & Auto Leverage scales strictly between 5x and 20x', () => {
+    const { computeAutoLeverage } = require('../lib/modules/riskAndValidation');
+    assert.strictEqual(computeAutoLeverage({ atrPct: 2.0, signalQualityScore: 70, maxLeverage: 20 }), 5);
+    assert.strictEqual(computeAutoLeverage({ atrPct: 0.3, signalQualityScore: 85, maxLeverage: 20 }), 20);
+    const rMan = evaluateLiveRisk({ availBal: 500, entryPrice: 100, slPrice: 98, qtyStep: 0.1, minOrderQty: 0.1, maxOrderQty: 1000, autoLeverage: false, leverage: 15 });
+    assert.strictEqual(rMan.approved, true);
+    assert.strictEqual(rMan.leverage, 15);
+  });
+
   console.log(`\nRESULTS: ${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);
 })();
