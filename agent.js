@@ -1,8 +1,9 @@
-// File: agent.js (v5 — Auto Leverage, Max Margin %, Win Rate Donut, Equity Curve & WHY Panel)
+// File: agent.js (v6 Complete Sniper Edition — TF Selector, S/R Chart Lines, Patterns, ADX/RSI/BTC/Daily Lock)
 (function () {
   const $ = (id) => document.getElementById(id);
   let chart = null;
   let candleSeries = null;
+  let activePriceLines = [];
 
   function logLine(tag, msg, colorClass = 'text-slate-300') {
     const box = $('terminal-logs');
@@ -68,11 +69,37 @@
     });
   }
 
-  async function loadChartCandles(symbol = 'BTC', tf = '15m') {
+  function clearChartLines() {
+    if (!candleSeries) return;
+    activePriceLines.forEach(line => {
+      try { candleSeries.removePriceLine(line); } catch (e) {}
+    });
+    activePriceLines = [];
+  }
+
+  function drawOverlayLines(pick) {
+    if (!candleSeries || !pick) return;
+    clearChartLines();
+    const addLine = (price, color, title, style = 2) => {
+      if (!Number.isFinite(Number(price)) || Number(price) <= 0) return;
+      const l = candleSeries.createPriceLine({
+        price: Number(price), color, lineWidth: 1, lineStyle: style, axisLabelVisible: true, title
+      });
+      activePriceLines.push(l);
+    };
+    (pick.supportLevels || []).forEach((s, i) => addLine(s, '#10b981', `SUP ${i + 1}`, 2));
+    (pick.resistanceLevels || []).forEach((r, i) => addLine(r, '#f43f5e', `RES ${i + 1}`, 2));
+    addLine(pick.entry, '#38bdf8', `ENTRY (${pick.orderType || 'Mkt'})`, 0);
+    addLine(pick.sl, '#fb7185', 'SL', 1);
+    addLine(pick.tp1, '#34d399', 'TP1 (50%)', 1);
+  }
+
+  async function loadChartCandles(symbol = 'BTC', tf = '15m', pick = null) {
     try {
       const j = await safeFetchJson(`/api/futures-agent?action=bybit_klines&symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(tf)}`);
       if (j.ok && Array.isArray(j.candles) && j.candles.length && candleSeries) {
         candleSeries.setData(j.candles);
+        if (pick) drawOverlayLines(pick);
         chart.timeScale().fitContent();
       }
     } catch (e) { logLine('CHART', e.message, 'text-rose-400'); }
@@ -101,7 +128,7 @@
     if (Array.isArray(data.journal) && data.journal.length) {
       const lastOrder = data.journal.find(j => j.type === 'LIVE_ORDER_OPEN');
       if (lastOrder) {
-        $('why-box').textContent = `${lastOrder.symbol} ${lastOrder.direction} (${lastOrder.leverage}x Isolated · Margin $${lastOrder.requiredMargin}): ${lastOrder.why || 'Signal verified'}`;
+        $('why-box').textContent = `${lastOrder.symbol} ${lastOrder.orderType || ''} ${lastOrder.direction} (${lastOrder.leverage}x Iso): ${lastOrder.why || 'Verified'}`;
       }
     }
   }
@@ -115,20 +142,23 @@
       $('val-6').textContent = `$${equity} USDT`;
       $('badge-6').textContent = 'VERIFIED';
       $('badge-6').className = 'text-emerald-400';
-      $('kpi-pnl').textContent = `${uPnl >= 0 ? '+' : ''}$${uPnl.toFixed(4)}`;
+      const dailyTxt = data.dailyGuard ? ` (${data.dailyGuard.dailyPnlPct >= 0 ? '+' : ''}${data.dailyGuard.dailyPnlPct}% d)` : '';
+      $('kpi-pnl').textContent = `${uPnl >= 0 ? '+' : ''}$${uPnl.toFixed(3)}${dailyTxt}`;
       $('kpi-pnl').className = `text-sm md:text-base font-bold ${uPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
     }
     const tel = data.systemTelemetry;
     if (tel) {
-      $('kpi-gate').textContent = tel.liveTradingStatus;
-      $('kpi-gate').className = tel.liveTradingStatus === 'BYBIT_LIVE_ARMED'
+      $('kpi-gate').textContent = data.dailyGuard?.locked ? data.dailyGuard.errorCode : tel.liveTradingStatus;
+      $('kpi-gate').className = (tel.liveTradingStatus === 'BYBIT_LIVE_ARMED' && !data.dailyGuard?.locked)
         ? 'text-xs md:text-sm font-bold text-emerald-400'
         : 'text-xs md:text-sm font-bold text-rose-400';
-      const isRedisOk = tel.redisStatus === 'UPSTASH_REDIS_VERIFIED';
-      $('badge-5').textContent = isRedisOk ? 'VERIFIED' : 'DEGRADED';
-      $('badge-5').className = isRedisOk ? 'text-emerald-400' : 'text-amber-400';
+      $('badge-5').textContent = tel.telegramEnabled ? 'TG ON' : 'TG OFF';
+      $('badge-5').className = tel.telegramEnabled ? 'text-emerald-400' : 'text-slate-400';
+      $('val-5').textContent = data.dailyGuard?.locked ? 'DAILY LOCKED' : 'DAILY OK';
       $('sub-5').textContent = `${tel.region} · ${tel.autoPilotStatus || 'MANUAL'}`;
     }
+    if (data.fearGreed && $('pill-fng')) $('pill-fng').textContent = `F&G: ${data.fearGreed.value} (${data.fearGreed.classification})`;
+    if (tel?.aiProvider && $('badge-ai-provider')) $('badge-ai-provider').textContent = `AI: ${tel.aiProvider}`;
     renderAnalytics(data);
   }
 
@@ -137,30 +167,36 @@
     const pick = data.pick;
     if (!pick) return;
 
-    $('badge-1').textContent = 'DONE';
-    $('badge-1').className = 'text-emerald-400';
+    $('badge-1').textContent = pick.chartTf.toUpperCase();
+    $('badge-1').className = 'text-sky-400';
     $('val-1').textContent = `${pick.bybitSymbol} (${pick.direction})`;
-    $('sub-1').textContent = `Score ${pick.signalQualityScore || 0}/100 · Spread ${pick.spreadPct}%`;
+    $('sub-1').textContent = `Score ${pick.signalQualityScore || 0}/100 · OI ${pick.oiChangePct >= 0 ? '+' : ''}${pick.oiChangePct}%`;
 
     const isNoTrade = pick.decision === 'NO_TRADE';
-    $('badge-2').textContent = isNoTrade ? 'REJECTED' : 'PASSED';
+    $('badge-2').textContent = isNoTrade ? 'VETOED' : 'SNIPER OK';
     $('badge-2').className = isNoTrade ? 'text-amber-400' : 'text-emerald-400';
-    $('val-2').textContent = `MTF ${pick.mtfConfluenceScore}%`;
-    $('sub-2').textContent = pick.noTradeReason || 'All safety gates passed';
+    $('val-2').textContent = `ADX ${pick.adx} · RSI ${pick.rsi}`;
+    $('sub-2').textContent = pick.noTradeReason || `Pattern: ${pick.pattern}`;
 
     $('badge-3').textContent = `${pick.leverage}x ${pick.autoLeverageUsed ? 'AUTO' : 'MAN'}`;
     $('val-3').textContent = `QTY: ${pick.orderQty}`;
     $('sub-3').textContent = `Margin $${pick.requiredMargin} · R:R 1:${pick.rrRatio}`;
 
-    $('val-4').textContent = pick.decision;
+    $('val-4').textContent = `${pick.decision} (${pick.orderType})`;
     $('sub-4').textContent = `Entry ${pick.entry} · SL ${pick.sl}`;
     $('why-box').textContent = pick.summaryNote || '';
+    $('badge-pattern').textContent = `PATTERN: ${pick.pattern || 'NONE'}`;
 
     $('chart-title').textContent = `${pick.bybitSymbol} · ${pick.chartTf.toUpperCase()} (${pick.decision})`;
-    $('chart-sub').textContent = pick.summaryNote || '';
-    $('pill-entry').textContent = `Entry: ${pick.entry}`;
+    $('chart-sub').textContent = `S: ${(pick.supportLevels || []).join(', ') || '--'} | R: ${(pick.resistanceLevels || []).join(', ') || '--'}`;
+    $('pill-adx').textContent = `ADX: ${pick.adx}`;
+    $('pill-rsi').textContent = `RSI: ${pick.rsi}`;
+    $('pill-btc').textContent = `BTC: ${pick.btcTrend || '--'}`;
+    if ($('pill-whale')) $('pill-whale').textContent = `WHALE: ${pick.whaleAlert || 'NONE'}`;
+    if (data.aiReview?.used) $('why-box').textContent = `[${data.aiReview.provider} ${data.aiReview.approve ? 'OK' : 'VETO'}] ${data.aiReview.summary} | ${pick.summaryNote || ''}`;
+    $('pill-entry').textContent = `Entry (${pick.orderType}): ${pick.entry}`;
     $('pill-sl').textContent = `SL: ${pick.sl}`;
-    $('pill-tp').textContent = `TP1: ${pick.tp1} | TP4: ${pick.tp}`;
+    $('pill-tp').textContent = `TP1 (50%): ${pick.tp1} | TP4: ${pick.tp}`;
 
     const bd = pick.mtfBreakdown || {};
     ['1D', '4H', '1H', '15M', '5M'].forEach(tf => {
@@ -171,7 +207,7 @@
       el.className = v === 'BULL' ? 'font-bold text-emerald-400' : v === 'BEAR' ? 'font-bold text-rose-400' : 'font-bold text-slate-400';
     });
 
-    loadChartCandles(pick.coin, pick.chartTf || '15m');
+    loadChartCandles(pick.coin, pick.chartTf || '15m', pick);
   }
 
   function renderPositions(positions = []) {
@@ -207,63 +243,104 @@
     } catch (e) { logLine('ERROR', e.message, 'text-rose-400'); showBanner(e.message, 'error'); }
   };
 
-  async function refreshStatus() {
-    try {
-      const st = await callAgent({ action: 'status' });
-      updateTelemetry(st);
-      renderPositions(st.positions || []);
-      logLine('BYBIT', `Synced [${st.systemTelemetry?.region}]: $${Number(st.wallet?.availableBalance || 0).toFixed(2)} avail · ${(st.positions || []).length} open pos.`, 'text-sky-300');
-    } catch (e) { logLine('AUTH', `Sync status: ${e.message}`, 'text-amber-400'); }
-  }
-
   function getFormParams() {
     return {
       coinMode: $('inp-coin-mode').value,
       manualCoin: $('inp-manual-coin').value,
+      timeframe: $('inp-tf').value,
+      entryMode: $('inp-entry-mode').value,
       humanBias: $('inp-bias').value,
       riskPerTradePct: Number($('inp-risk').value || 3) / 100,
       maxMarginPct: Number($('inp-margin').value || 20) / 100,
+      maxDailyLossPct: Number($('inp-daily-loss').value || 5),
+      dailyProfitTargetPct: Number($('inp-daily-profit').value || 10),
       autoLeverage: $('inp-auto-lev').value === 'true',
-      leverage: Number($('inp-lev').value || 5)
+      leverage: 5
     };
+  }
+
+  async function refreshStatus() {
+    try {
+      const p = getFormParams();
+      const st = await callAgent({ action: 'status', maxDailyLossPct: p.maxDailyLossPct, dailyProfitTargetPct: p.dailyProfitTargetPct });
+      updateTelemetry(st);
+      renderPositions(st.positions || []);
+      logLine('BYBIT', `Synced [${st.systemTelemetry?.region}]: $${Number(st.wallet?.availableBalance || 0).toFixed(2)} avail · Daily ${st.dailyGuard?.dailyPnlPct || 0}%`, 'text-sky-300');
+    } catch (e) { logLine('AUTH', `Sync status: ${e.message}`, 'text-amber-400'); }
   }
 
   document.addEventListener('DOMContentLoaded', () => {
     initChart();
     loadChartCandles('BTC', '15m');
 
+    $('inp-tf')?.addEventListener('change', () => {
+      const coin = $('inp-manual-coin')?.value || 'BTC';
+      loadChartCandles(coin, $('inp-tf').value);
+    });
     $('btn-refresh')?.addEventListener('click', refreshStatus);
+
+    async function sendAiChat() {
+      const inp = $('inp-ai-chat');
+      const box = $('ai-chat-log');
+      const q = (inp?.value || '').trim();
+      if (!q || !box) return;
+      inp.value = '';
+      const uDiv = document.createElement('div');
+      uDiv.className = 'text-sky-300 font-semibold';
+      uDiv.textContent = `You: ${q}`;
+      box.appendChild(uDiv);
+      box.scrollTop = box.scrollHeight;
+      try {
+        const res = await callAgent({ action: 'ai_chat', question: q });
+        const aDiv = document.createElement('div');
+        aDiv.className = 'text-slate-200 whitespace-pre-wrap';
+        aDiv.textContent = `AI (${res.provider || 'BOT'}): ${res.reply}`;
+        box.appendChild(aDiv);
+        if (res.fearGreed && $('pill-fng')) $('pill-fng').textContent = `F&G: ${res.fearGreed.value} (${res.fearGreed.classification})`;
+      } catch (e) {
+        const eDiv = document.createElement('div');
+        eDiv.className = 'text-rose-400';
+        eDiv.textContent = `AI Error: ${e.message}`;
+        box.appendChild(eDiv);
+      }
+      box.scrollTop = box.scrollHeight;
+    }
+    $('btn-ai-send')?.addEventListener('click', sendAiChat);
+    $('inp-ai-chat')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendAiChat(); });
+
     $('btn-clear-logs')?.addEventListener('click', () => { $('terminal-logs').innerHTML = ''; });
 
     $('btn-analyze')?.addEventListener('click', async () => {
       try {
-        logLine('SCANNER', 'Running v5 scan with Auto-Leverage & Margin Cap...', 'text-sky-300');
-        const res = await callAgent({ action: 'analyze_only', ...getFormParams() });
+        const p = getFormParams();
+        logLine('SNIPER', `Running v6 scan (${p.timeframe}, ${p.entryMode})...`, 'text-sky-300');
+        const res = await callAgent({ action: 'analyze_only', ...p });
         updatePipelineCards(res);
         if (res.walletWarning) logLine('WALLET', res.walletWarning, 'text-amber-400');
-        showBanner(res.decision === 'NO_TRADE' ? (res.noTradeReason || 'NO_TRADE') : `Setup Verified: ${res.pick.bybitSymbol} ${res.decision} (${res.pick.leverage}x)`, res.decision === 'NO_TRADE' ? 'info' : 'success');
+        showBanner(res.decision === 'NO_TRADE' ? (res.noTradeReason || 'NO_TRADE') : `Sniper Verified: ${res.pick.bybitSymbol} ${res.decision} (${res.pick.orderType} @ ${res.pick.entry})`, res.decision === 'NO_TRADE' ? 'info' : 'success');
       } catch (e) { logLine('ERROR', e.message, 'text-rose-400'); showBanner(e.message, 'error'); }
     });
 
     $('btn-trade')?.addEventListener('click', async () => {
       try {
-        if (!$('inp-live-confirm').checked) { showBanner('Tick "Arm Live" first.', 'error'); return; }
-        logLine('EXECUTOR', 'Submitting LIVE Bybit V5 order (Isolated + Auto-Lev)...', 'text-rose-300');
-        const res = await callAgent({ action: 'scan_and_trade', liveConfirmed: true, ...getFormParams() });
+        if (!$('inp-live-confirm').checked) { showBanner('Tick "Arm" first.', 'error'); return; }
+        const p = getFormParams();
+        logLine('EXECUTOR', `Submitting LIVE v6 ${p.entryMode} order...`, 'text-rose-300');
+        const res = await callAgent({ action: 'scan_and_trade', liveConfirmed: true, ...p });
         updatePipelineCards(res);
         logLine('BYBIT', res.exec?.orderTypeLabel || 'Order placed', 'text-emerald-400');
-        showBanner(`LIVE ORDER FILLED: ${res.exec?.orderTypeLabel}`, 'success');
+        showBanner(`LIVE ORDER SUBMITTED: ${res.exec?.orderTypeLabel}`, 'success');
         await refreshStatus();
       } catch (e) { logLine('BLOCKED', e.message, 'text-rose-400'); showBanner(e.message, 'error'); }
     });
 
     $('btn-backtest')?.addEventListener('click', async () => {
       try {
-        const coin = $('inp-manual-coin').value || 'BTC';
-        const res = await callAgent({ action: 'backtest', manualCoin: coin });
+        const p = getFormParams();
+        const res = await callAgent({ action: 'backtest', manualCoin: p.manualCoin || 'BTC', timeframe: p.timeframe });
         const wf = res.walkForward;
-        logLine('BACKTEST', `${res.symbol} OOS: ${wf.outOfSample?.sampleCount} trades · WR ${wf.outOfSample?.winRate}% · Exp ${wf.outOfSample?.expectancyR}R · Enabled=${wf.enabled}`, 'text-indigo-300');
-        showBanner(`Walk-Forward (${res.symbol}): OOS Exp ${wf.outOfSample?.expectancyR}R`, wf.enabled ? 'success' : 'info');
+        logLine('BACKTEST', `${res.symbol} (${res.tf}) OOS: ${wf.outOfSample?.sampleCount} trades · WR ${wf.outOfSample?.winRate}% · Exp ${wf.outOfSample?.expectancyR}R`, 'text-indigo-300');
+        showBanner(`Walk-Forward (${res.symbol} ${res.tf}): OOS Exp ${wf.outOfSample?.expectancyR}R`, wf.enabled ? 'success' : 'info');
       } catch (e) { logLine('ERROR', e.message, 'text-rose-400'); showBanner(e.message, 'error'); }
     });
 

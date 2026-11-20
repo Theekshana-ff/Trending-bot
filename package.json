@@ -1,13 +1,13 @@
 {
   "name": "bybit-live-trading-bot",
-  "version": "5.0.0",
+  "version": "7.0.0",
   "private": true,
-  "description": "Bybit V5 Live-Only Quant Bot v5 \u2014 Auto Leverage, Isolated Margin Cap, Trailing Stop & Analytics",
+  "description": "Bybit V5 Live Quant Bot v7 \u2014 Grok-Style Free Groq AI Agent + v6 Sniper Edition",
   "engines": {
     "node": "26.x"
   },
   "scripts": {
-    "check": "node --check api/futures-agent.js && node --check api/news.js && node --check agent.js && node --check lib/modules/marketData.js && node --check lib/modules/indicators.js && node --check lib/modules/structureSmc.js && node --check lib/modules/riskAndValidation.js && node --check lib/modules/aiBrainAndBacktest.js && node --check lib/modules/securityAndState.js && node --check lib/modules/bybitLiveClient.js && node --check tests/run-tests.js",
+    "check": "node --check api/futures-agent.js && node --check api/news.js && node --check agent.js && node --check lib/modules/marketData.js && node --check lib/modules/indicators.js && node --check lib/modules/structureSmc.js && node --check lib/modules/riskAndValidation.js && node --check lib/modules/aiBrainAndBacktest.js && node --check lib/modules/securityAndState.js && node --check lib/modules/bybitLiveClient.js && node --check lib/modules/telegramNotifier.js && node --check lib/modules/aiAgent.js && node --check tests/run-tests.js",
     "test": "node tests/run-tests.js"
   }
 }

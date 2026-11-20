@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Bybit V5 Live Quant Trading Bot v5 — Auto Leverage, Isolated Margin & Analytics</title>
+  <title>Bybit V5 Live Trading Bot v6 — Complete Sniper Edition</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
   <style>
@@ -20,13 +20,13 @@
     <header class="card p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
       <div>
         <div class="flex items-center gap-2 flex-wrap">
-          <span class="inline-block w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></span>
+          <span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
           <h1 class="text-lg md:text-xl font-bold tracking-tight text-white">
             BYBIT V5 LIVE TRADING BOT
-            <span class="text-xs px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 mono">LIVE v5 · AUTO-LEV</span>
+            <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 mono">v7 GROK-STYLE AI AGENT</span>
           </h1>
         </div>
-        <p class="text-xs text-slate-400 mt-0.5">Auto Volatility Leverage · Auto Isolated Margin Cap · Auto Breakeven &amp; Trailing Stop · SG (sin1)</p>
+        <p class="text-xs text-slate-400 mt-0.5">Free Groq AI (Llama 3.3) · Live News Veto · Fear &amp; Greed · Whale Detector · v6 Sniper Engine · Telegram</p>
       </div>
 
       <div class="grid grid-cols-3 gap-2 md:gap-4 text-right mono">
@@ -35,7 +35,7 @@
           <div id="kpi-balance" class="text-sm md:text-base font-bold text-emerald-400">-- USDT</div>
         </div>
         <div class="bg-slate-900/90 px-3 py-2 rounded-lg border border-slate-800">
-          <div class="text-[10px] text-slate-400 uppercase">Unrealized PnL</div>
+          <div class="text-[10px] text-slate-400 uppercase">Daily PnL / uPnL</div>
           <div id="kpi-pnl" class="text-sm md:text-base font-bold text-slate-200">$0.0000</div>
         </div>
         <div class="bg-slate-900/90 px-3 py-2 rounded-lg border border-slate-800">
@@ -49,12 +49,12 @@
       <div class="card p-3">
         <div class="flex justify-between text-[11px] text-slate-400 mono"><span>01 · SCANNER</span><span id="badge-1">IDLE</span></div>
         <div id="val-1" class="text-sm font-bold text-white mt-1 mono">TOP-18 USDT</div>
-        <div id="sub-1" class="text-[11px] text-slate-400 mt-0.5 truncate">Closed-candle 5-TF</div>
+        <div id="sub-1" class="text-[11px] text-slate-400 mt-0.5 truncate">BTC Filter + 5-TF</div>
       </div>
       <div class="card p-3">
-        <div class="flex justify-between text-[11px] text-slate-400 mono"><span>02 · SAFETY</span><span id="badge-2">IDLE</span></div>
-        <div id="val-2" class="text-sm font-bold text-white mt-1 mono">MTF + SMC</div>
-        <div id="sub-2" class="text-[11px] text-slate-400 mt-0.5 truncate">Stale/SL/TP/Spread</div>
+        <div class="flex justify-between text-[11px] text-slate-400 mono"><span>02 · SNIPER</span><span id="badge-2">IDLE</span></div>
+        <div id="val-2" class="text-sm font-bold text-white mt-1 mono">ADX / RSI / S&amp;R</div>
+        <div id="sub-2" class="text-[11px] text-slate-400 mt-0.5 truncate">Patterns + OI Guard</div>
       </div>
       <div class="card p-3">
         <div class="flex justify-between text-[11px] text-slate-400 mono"><span>03 · SIZER</span><span id="badge-3">AUTO-LEV</span></div>
@@ -64,11 +64,11 @@
       <div class="card p-3">
         <div class="flex justify-between text-[11px] text-slate-400 mono"><span>04 · EXECUTOR</span><span id="badge-4" class="text-rose-400">LIVE V5</span></div>
         <div id="val-4" class="text-sm font-bold text-white mt-1 mono">STANDBY</div>
-        <div id="sub-4" class="text-[11px] text-slate-400 mt-0.5 truncate">Market + SL/TP/Trail</div>
+        <div id="sub-4" class="text-[11px] text-slate-400 mt-0.5 truncate">Limit/Mkt + Partial TP1</div>
       </div>
       <div class="card p-3">
-        <div class="flex justify-between text-[11px] text-slate-400 mono"><span>05 · STORAGE</span><span id="badge-5">UNCHECKED</span></div>
-        <div id="val-5" class="text-sm font-bold text-white mt-1 mono">REDIS / LOCK</div>
+        <div class="flex justify-between text-[11px] text-slate-400 mono"><span>05 · GUARDIAN</span><span id="badge-5">UNCHECKED</span></div>
+        <div id="val-5" class="text-sm font-bold text-white mt-1 mono">DAILY / TG</div>
         <div id="sub-5" class="text-[11px] text-slate-400 mt-0.5 truncate">Click Sync to verify</div>
       </div>
       <div class="card p-3">
@@ -79,57 +79,75 @@
     </section>
 
     <section class="card p-4 space-y-3">
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
-        <div>
-          <label class="block text-[11px] text-slate-400 mb-1">Agent Password (Memory)</label>
-          <input id="inp-secret" type="password" autocomplete="off" placeholder="AGENT_SECRET" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white mono" />
+      <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5">
+        <div class="col-span-2 sm:col-span-2">
+          <label class="block text-[11px] text-slate-400 mb-1">Agent Password</label>
+          <input id="inp-secret" type="password" autocomplete="off" placeholder="AGENT_SECRET" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-white mono" />
         </div>
         <div>
           <label class="block text-[11px] text-slate-400 mb-1">Coin Mode</label>
-          <div class="flex gap-1.5">
-            <select id="inp-coin-mode" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-xs text-white mono">
+          <div class="flex gap-1">
+            <select id="inp-coin-mode" class="w-1/2 bg-slate-900 border border-slate-700 rounded-lg px-1.5 py-2 text-xs text-white mono">
               <option value="auto">Auto</option>
-              <option value="manual">Manual</option>
+              <option value="manual">Man</option>
             </select>
-            <input id="inp-manual-coin" type="text" value="SOL" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-xs text-white mono uppercase" />
+            <input id="inp-manual-coin" type="text" value="SOL" class="w-1/2 bg-slate-900 border border-slate-700 rounded-lg px-1.5 py-2 text-xs text-white mono uppercase" />
           </div>
         </div>
         <div>
-          <label class="block text-[11px] text-slate-400 mb-1">Direction Bias</label>
-          <select id="inp-bias" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-white mono">
-            <option value="ai_100">AI Both</option>
-            <option value="long_only">LONG Only</option>
-            <option value="short_only">SHORT Only</option>
+          <label class="block text-[11px] text-slate-400 mb-1">Timeframe</label>
+          <select id="inp-tf" class="w-full bg-slate-900 border border-sky-500/40 rounded-lg px-2 py-2 text-xs text-sky-300 mono">
+            <option value="5m">5m (Scalp)</option>
+            <option value="15m" selected>15m (Sniper)</option>
+            <option value="1h">1h (Intraday)</option>
+            <option value="4h">4h (Swing)</option>
           </select>
         </div>
         <div>
-          <label class="block text-[11px] text-slate-400 mb-1">Risk % &amp; Max Margin %</label>
-          <div class="flex gap-1.5">
-            <input id="inp-risk" type="number" step="0.5" min="0.5" max="10" value="3" title="Risk % per trade" class="w-1/2 bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-xs text-white mono" />
-            <input id="inp-margin" type="number" step="5" min="5" max="50" value="20" title="Max Margin % per trade" class="w-1/2 bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-xs text-white mono" />
-          </div>
-        </div>
-        <div>
-          <label class="block text-[11px] text-slate-400 mb-1">Leverage Mode</label>
-          <div class="flex gap-1.5 items-center">
-            <select id="inp-auto-lev" class="w-2/3 bg-slate-900 border border-emerald-500/40 rounded-lg px-2 py-2 text-xs text-emerald-300 mono">
-              <option value="true" selected>Auto (ATR)</option>
-              <option value="false">Manual</option>
+          <label class="block text-[11px] text-slate-400 mb-1">Entry &amp; Bias</label>
+          <div class="flex gap-1">
+            <select id="inp-entry-mode" class="w-1/2 bg-slate-900 border border-emerald-500/40 rounded-lg px-1 py-2 text-[11px] text-emerald-300 mono">
+              <option value="limit_pullback" selected>Limit</option>
+              <option value="market">Mkt</option>
             </select>
-            <input id="inp-lev" type="number" step="1" min="1" max="20" value="5" class="w-1/3 bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-xs text-white mono" />
+            <select id="inp-bias" class="w-1/2 bg-slate-900 border border-slate-700 rounded-lg px-1 py-2 text-[11px] text-white mono">
+              <option value="ai_100">Both</option>
+              <option value="long_only">LONG</option>
+              <option value="short_only">SHORT</option>
+            </select>
           </div>
         </div>
         <div>
-          <label class="block text-[11px] text-slate-400 mb-1">Live Order Arm</label>
-          <label class="flex items-center gap-2 bg-slate-900 border border-rose-500/40 rounded-lg px-3 py-2 text-xs text-rose-300 cursor-pointer select-none">
-            <input id="inp-live-confirm" type="checkbox" class="rounded bg-slate-950 border-rose-500 text-rose-500" />
-            <span class="mono">Arm Live</span>
-          </label>
+          <label class="block text-[11px] text-slate-400 mb-1">Risk% / Margin%</label>
+          <div class="flex gap-1">
+            <input id="inp-risk" type="number" step="0.5" min="0.5" max="10" value="3" title="Risk %" class="w-1/2 bg-slate-900 border border-slate-700 rounded-lg px-1.5 py-2 text-xs text-white mono" />
+            <input id="inp-margin" type="number" step="5" min="5" max="50" value="20" title="Max Margin %" class="w-1/2 bg-slate-900 border border-slate-700 rounded-lg px-1.5 py-2 text-xs text-white mono" />
+          </div>
+        </div>
+        <div>
+          <label class="block text-[11px] text-slate-400 mb-1">Daily -Loss/+TP %</label>
+          <div class="flex gap-1">
+            <input id="inp-daily-loss" type="number" step="1" min="1" max="30" value="5" title="Daily Max Loss %" class="w-1/2 bg-slate-900 border border-rose-500/40 rounded-lg px-1.5 py-2 text-xs text-rose-300 mono" />
+            <input id="inp-daily-profit" type="number" step="1" min="2" max="50" value="10" title="Daily Profit Lock %" class="w-1/2 bg-slate-900 border border-emerald-500/40 rounded-lg px-1.5 py-2 text-xs text-emerald-300 mono" />
+          </div>
+        </div>
+        <div>
+          <label class="block text-[11px] text-slate-400 mb-1">Lev &amp; Live Arm</label>
+          <div class="flex gap-1 items-center">
+            <select id="inp-auto-lev" class="w-1/2 bg-slate-900 border border-slate-700 rounded-lg px-1 py-2 text-[11px] text-emerald-300 mono">
+              <option value="true" selected>Auto</option>
+              <option value="false">5x</option>
+            </select>
+            <label class="w-1/2 flex items-center justify-center gap-1 bg-slate-900 border border-rose-500/40 rounded-lg py-2 text-[11px] text-rose-300 cursor-pointer select-none mono">
+              <input id="inp-live-confirm" type="checkbox" class="rounded bg-slate-950 border-rose-500 text-rose-500" />
+              <span>Arm</span>
+            </label>
+          </div>
         </div>
       </div>
 
       <div class="flex flex-wrap items-center gap-2 pt-1">
-        <button id="btn-analyze" class="px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs cursor-pointer">1. Run 6-Stage Scan</button>
+        <button id="btn-analyze" class="px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs cursor-pointer">1. Run v6 Sniper Scan</button>
         <button id="btn-trade" class="px-3.5 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs cursor-pointer">2. Execute Live Trade</button>
         <button id="btn-backtest" class="px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs cursor-pointer">Walk-Forward</button>
         <button id="btn-refresh" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs cursor-pointer">Sync Bybit</button>
@@ -163,9 +181,12 @@
       </div>
 
       <div class="card p-4">
-        <div class="text-[11px] text-amber-400 mono uppercase mb-1">WHY — Last Decision / Trade</div>
-        <div id="why-box" class="text-xs mono text-slate-300 leading-relaxed truncate-3">
-          Run Sync or Scan to view deterministic trigger, leverage &amp; margin breakdown.
+        <div class="flex justify-between items-center mb-1">
+          <span class="text-[11px] text-amber-400 mono uppercase">WHY — Sniper Decision</span>
+          <span id="badge-pattern" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-sky-300 mono">PATTERN: --</span>
+        </div>
+        <div id="why-box" class="text-xs mono text-slate-300 leading-relaxed">
+          Run Sync or Scan to view ADX, RSI, BTC trend, S/R zones, Pattern &amp; Margin breakdown.
         </div>
       </div>
     </section>
@@ -173,16 +194,23 @@
     <section class="grid grid-cols-1 lg:grid-cols-12 gap-4">
       <div class="lg:col-span-7 card p-4 flex flex-col justify-between">
         <div>
-          <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
             <div>
-              <h2 id="chart-title" class="text-sm font-bold text-white mono">BTCUSDT.P · 15M CLOSED-CANDLE STRUCTURE</h2>
+              <h2 id="chart-title" class="text-sm font-bold text-white mono">BTCUSDT.P · 15M S/R &amp; PATTERN CHART</h2>
               <p id="chart-sub" class="text-[11px] text-slate-400 mono">Waiting for scan...</p>
             </div>
             <div class="flex flex-wrap gap-1.5 text-[11px] mono">
-              <span id="pill-entry" class="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300">Entry: --</span>
-              <span id="pill-sl" class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300">SL: --</span>
-              <span id="pill-tp" class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">TP1-TP4: --</span>
+              <span id="pill-adx" class="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300">ADX: --</span>
+              <span id="pill-rsi" class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">RSI: --</span>
+              <span id="pill-btc" class="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300">BTC: --</span>
+              <span id="pill-fng" class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">F&amp;G: --</span>
+              <span id="pill-whale" class="px-2 py-0.5 rounded bg-pink-500/20 text-pink-300">WHALE: --</span>
             </div>
+          </div>
+          <div class="flex flex-wrap gap-1.5 text-[11px] mono mb-2">
+            <span id="pill-entry" class="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300">Entry: --</span>
+            <span id="pill-sl" class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300">SL: --</span>
+            <span id="pill-tp" class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">TP1: -- | TP4: --</span>
           </div>
           <div id="tv-chart" class="w-full h-72 rounded-lg overflow-hidden border border-slate-800"></div>
         </div>
@@ -198,11 +226,11 @@
       <div class="lg:col-span-5 flex flex-col gap-4">
         <div class="card p-4 flex-1 flex flex-col">
           <div class="flex items-center justify-between mb-2">
-            <h2 class="text-xs font-bold uppercase tracking-wider text-emerald-400 mono">&gt;_ LIVE PIPELINE TERMINAL LOGS</h2>
+            <h2 class="text-xs font-bold uppercase tracking-wider text-emerald-400 mono">&gt;_ LIVE SNIPER TERMINAL LOGS</h2>
             <button id="btn-clear-logs" class="text-[11px] text-slate-400 hover:text-white mono">Clear</button>
           </div>
           <div id="terminal-logs" class="bg-black/80 border border-slate-800 rounded-lg p-3 h-52 overflow-y-auto mono text-[11px] space-y-1.5 text-slate-300">
-            <div class="text-slate-500">[SYSTEM] Bybit V5 Live Bot v5 initialized. Auto-Leverage + Isolated Margin ready.</div>
+            <div class="text-slate-500">[SYSTEM] Bybit V5 Live Bot v6 Complete Sniper Edition ready.</div>
           </div>
         </div>
         <div class="card p-4">
@@ -214,6 +242,21 @@
             No open Bybit positions.
           </div>
         </div>
+      </div>
+    </section>
+
+
+    <section class="card p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-xs font-bold uppercase tracking-wider text-sky-400 mono">🤖 GROK-STYLE CRYPTO AI AGENT CHAT (FREE GROQ AI)</h2>
+        <span id="badge-ai-provider" class="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-emerald-300 mono">AI: UNCHECKED</span>
+      </div>
+      <div id="ai-chat-log" class="bg-slate-950/80 border border-slate-800 rounded-lg p-3 h-36 overflow-y-auto text-xs space-y-2 text-slate-300 mb-2">
+        <div class="text-slate-500 mono">[AI AGENT] Ask anything in Sinhala or English (e.g., "දැන් SOL long දාන්න හොඳද?" or "Analyze market sentiment").</div>
+      </div>
+      <div class="flex gap-2">
+        <input id="inp-ai-chat" type="text" placeholder="Ask Grok-style AI Agent..." class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
+        <button id="btn-ai-send" class="px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs cursor-pointer">Ask AI</button>
       </div>
     </section>
 
