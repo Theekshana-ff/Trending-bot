@@ -203,6 +203,41 @@ function mockRes() {
     assert.strictEqual(safeNews.veto, false);
   });
 
+  await test('v8.3: Daily Risk Guard fails closed when equity unavailable in strict mode', async () => {
+    const { checkDailyGuard, sanitizeErrorForClient } = require('../lib/modules/securityAndState');
+    const gStrict = await checkDailyGuard(0, { maxDailyLossPct: 5, dailyProfitTargetPct: 10, strict: true });
+    assert.strictEqual(gStrict.locked, true);
+    assert.strictEqual(gStrict.errorCode, 'DAILY_GUARD_EQUITY_UNAVAILABLE');
+    const cleaned = sanitizeErrorForClient(new Error('Failed with key gsk_1234567890abcdef'));
+    assert.ok(!cleaned.includes('gsk_1234567890abcdef'));
+  });
+
+  await test('v8.3: Duplicate Exposure & Open Orders API failure blocks new order', () => {
+    const { checkDuplicateExposure } = require('../lib/modules/bybitLiveClient');
+    const unverified = checkDuplicateExposure('SOLUSDT', { openOrdersVerified: false, openOrdersError: 'timeout', positions: [], openOrders: [] });
+    assert.strictEqual(unverified.blocked, true);
+    assert.strictEqual(unverified.errorCode, 'OPEN_ORDERS_UNVERIFIED');
+
+    const dupPos = checkDuplicateExposure('SOLUSDT', { openOrdersVerified: true, positions: [{ symbol: 'SOLUSDT', size: '1' }], openOrders: [] });
+    assert.strictEqual(dupPos.blocked, true);
+    assert.strictEqual(dupPos.errorCode, 'DUPLICATE_POSITION');
+
+    const dupOrd = checkDuplicateExposure('SOLUSDT', { openOrdersVerified: true, positions: [], openOrders: [{ symbol: 'SOLUSDT' }] });
+    assert.strictEqual(dupOrd.blocked, true);
+    assert.strictEqual(dupOrd.errorCode, 'DUPLICATE_ORDER');
+  });
+
+  await test('v8.3: False Breakout Trap Detection & Zero-Leakage Walk-Forward', () => {
+    const { detectFalseBreakout } = require('../lib/modules/structureSmc');
+    const trapCandles = [[1, 100, 101, 99, 100, 100], [2, 100, 101, 99, 100, 100], [3, 100, 101, 99, 100, 100], [4, 100, 101, 99, 100, 100], [5, 100, 102.5, 99.5, 100.5, 200]];
+    const bullTrap = detectFalseBreakout(trapCandles, { resistance: 101, support: 95 }, 'LONG');
+    assert.strictEqual(bullTrap.isTrap, true);
+
+    const wf = runWalkForward(makeSyntheticCandles(160, 100, 0.3));
+    assert.strictEqual(wf.ok, true);
+    assert.strictEqual(wf.leakageFree, true);
+  });
+
   console.log(`\nRESULTS: ${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);
 })();
