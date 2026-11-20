@@ -1,6 +1,6 @@
 {
   "name": "bybit-live-trading-bot",
-  "version": "7.0.0",
+  "version": "7.1.0",
   "private": true,
   "description": "Bybit V5 Live Quant Bot v7 \u2014 Grok-Style Free Groq AI Agent + v6 Sniper Edition",
   "engines": {
