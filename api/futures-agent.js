@@ -6,19 +6,19 @@
 
 const { getBybitMarketData, fetchKlines, fetchOpenInterest } = require('../lib/modules/marketData');
 const { analyzeVolumeVolatility, evaluateMTF, detectTrend, checkRsiGuard } = require('../lib/modules/indicators');
-const { analyzeMarketStructure, checkSrProximity, detectChartPatterns, analyzeLiquidityAndSMC, analyzeFibonacci, analyzeElliottWave } = require('../lib/modules/structureSmc');
+const { analyzeMarketStructure, checkSrProximity, detectChartPatterns, detectFalseBreakout, analyzeLiquidityAndSMC, analyzeFibonacci, analyzeElliottWave } = require('../lib/modules/structureSmc');
 const { computeAndValidateEntry, evaluateLiveRisk, checkOiFundingSqueeze, formatBybitPrice } = require('../lib/modules/riskAndValidation');
 const { buildDeterministicExplanation, runWalkForward } = require('../lib/modules/aiBrainAndBacktest');
 const {
   safeCompareSecret, makeResponse, acquireLock, releaseLock,
   validateRequestNonce, checkRateLimit, getTradingHalted, setTradingHalted,
   appendJournalEntry, getJournalEntries, getSystemHealth,
-  recordEquitySnapshot, getEquityHistory, checkDailyGuard, requireVerifiedRedis, savePositionMeta
+  recordEquitySnapshot, getEquityHistory, checkDailyGuard, requireVerifiedRedis, savePositionMeta, sanitizeErrorForClient
 } = require('../lib/modules/securityAndState');
 const {
   bybitV5Req, fetchBybitWalletAndPositions, cancelStaleLimitOrders, fetchBybitClosedPnlStats,
   configureIsolatedAndLeverage, applyTrailingAndBreakeven,
-  closeVerifiedLivePosition, executeLiveEmergencyStop
+  closeVerifiedLivePosition, executeLiveEmergencyStop, verifyOrderStatus, checkDuplicateExposure, reconcileUnprotectedPositions
 } = require('../lib/modules/bybitLiveClient');
 const { sendTelegramAlert } = require('../lib/modules/telegramNotifier');
 const { getAiProviderConfig, fetchFearAndGreed, fetchLiveCryptoHeadlines, runAiSecondOpinion, runGrokStyleChat } = require('../lib/modules/aiAgent');
@@ -133,6 +133,7 @@ async function runSixStagePipeline({
     const adxFail = !volVol.isTrending;
     const rsiCheck = checkRsiGuard(volVol.rsi, dir);
     const srCheck = checkSrProximity(cand.price, dir, structure.supportLevels, structure.resistanceLevels);
+    const trapCheck = detectFalseBreakout(cPrimary, structure, dir);
     const oiCheck = checkOiFundingSqueeze({ direction: dir, fundingRate: cand.fundingRate, oiChangePct: oiData.oiChangePct });
 
     const levels = computeAndValidateEntry({
@@ -161,6 +162,7 @@ async function runSixStagePipeline({
     else if (adxFail) noTradeReason = `NO_TRADE: Choppy market (ADX ${volVol.adx} < 22).`;
     else if (!rsiCheck.ok) noTradeReason = rsiCheck.reason;
     else if (!srCheck.ok) noTradeReason = srCheck.reason;
+    else if (trapCheck.isTrap) noTradeReason = trapCheck.reason;
     else if (!oiCheck.ok) noTradeReason = oiCheck.reason;
     else if (volVol.regime === 'EXTREME_VOLATILITY') noTradeReason = `NO_TRADE: Extreme volatility (${volVol.atrPct}% ATR).`;
     else if (!levels.valid) noTradeReason = levels.reason;
@@ -227,6 +229,7 @@ async function executeLivePick(pick, sourceTag = 'MANUAL_UI') {
   if (isLimit) orderPayload.price = String(pick.entry);
 
   const orderRes = await bybitV5Req('POST', '/v5/order/create', orderPayload);
+  const orderVerification = await verifyOrderStatus(pick.bybitSymbol, orderRes?.orderId);
   await savePositionMeta(pick.bybitSymbol, { entry: pick.entry, initialSl: pick.sl, direction: pick.direction });
 
   const journalEntry = await appendJournalEntry({
@@ -259,6 +262,7 @@ async function executeLivePick(pick, sourceTag = 'MANUAL_UI') {
 
   return {
     orderId: orderRes?.orderId || null,
+    orderVerification,
     marginConf,
     journalEntry,
     orderTypeLabel: `LIVE ${orderPayload.orderType} ${pick.bybitSymbol} ${pick.direction} · Qty ${pick.orderQty} @ ${pick.entry} (${marginConf.leverage}x ${marginConf.marginModeLabel})`
@@ -337,11 +341,12 @@ module.exports = async (req, res) => {
           getBybitMarketData().catch(() => ({ instMap: {} }))
         ]);
         await recordEquitySnapshot(acct.wallet.totalEquity);
-        const dailyGuard = await checkDailyGuard(acct.wallet.totalEquity, { maxDailyLossPct, dailyProfitTargetPct });
+        const dailyGuard = await checkDailyGuard(acct.wallet.totalEquity, { maxDailyLossPct, dailyProfitTargetPct, strict: true });
 
-        const [trailingUpdates, cancelledStale] = await Promise.all([
+        const [trailingUpdates, cancelledStale, slReconciled] = await Promise.all([
           applyTrailingAndBreakeven(acct.positions, mkt.instMap || {}),
-          cancelStaleLimitOrders(acct.openOrders || [], 45)
+          cancelStaleLimitOrders(acct.openOrders || [], 45),
+          reconcileUnprotectedPositions(acct.positions, mkt.instMap || {})
         ]);
         for (const u of trailingUpdates) {
           if (u.action === 'PARTIAL_TP1_50PCT_LOCKED') {
@@ -356,7 +361,7 @@ module.exports = async (req, res) => {
         const redisOk = (await requireVerifiedRedis()).ok;
         const activeSymbols = new Set([...acct.positions.map(p => p.symbol), ...(acct.openOrders || []).map(o => o.symbol)]);
         const totalExposureCount = acct.positions.length + (acct.openOrders || []).length;
-        if (redisOk && !haltedState.halted && !dailyGuard.locked && isServerLiveAuthorized() && isAutoExecuteEnabled() && totalExposureCount < 3) {
+        if (redisOk && acct.openOrdersVerified !== false && !haltedState.halted && !dailyGuard.locked && isServerLiveAuthorized() && isAutoExecuteEnabled() && totalExposureCount < 3) {
           try {
             const scanRes = await runSixStagePipeline({
               coinMode: 'auto', humanBias: 'ai_100', timeframe: '15m', entryMode: 'limit_pullback',
@@ -523,7 +528,10 @@ module.exports = async (req, res) => {
         const [acct, pnlStatsPre] = await Promise.all([fetchBybitWalletAndPositions(), fetchBybitClosedPnlStats(20)]);
         const activeSymbols = new Set([...acct.positions.map(p => p.symbol), ...(acct.openOrders || []).map(o => o.symbol)]);
         const totalExposureCount = acct.positions.length + (acct.openOrders || []).length;
-        const dailyGuard = await checkDailyGuard(acct.wallet.totalEquity, { maxDailyLossPct, dailyProfitTargetPct });
+        if (acct.openOrdersVerified === false) {
+          return res.status(503).json(makeResponse(false, { error: `FAIL_CLOSED: Open Orders API failed (${acct.openOrdersError}).` }, { errorCode: 'OPEN_ORDERS_UNVERIFIED' }));
+        }
+        const dailyGuard = await checkDailyGuard(acct.wallet.totalEquity, { maxDailyLossPct, dailyProfitTargetPct, strict: true });
         if (dailyGuard.locked) {
           await sendTelegramAlert(`⛔ <b>${dailyGuard.errorCode}</b>\n${dailyGuard.reason}`);
           return res.status(423).json(makeResponse(false, { error: dailyGuard.reason, dailyGuard }, { errorCode: dailyGuard.errorCode }));
@@ -557,6 +565,10 @@ module.exports = async (req, res) => {
           await appendJournalEntry({ type: 'AI_NEWS_VETO', source: 'MANUAL_UI', symbol: scanRes.pick.bybitSymbol, direction: scanRes.pick.direction, provider: aiReview.provider, reason: aiReview.summary });
           await sendTelegramAlert(`🚫 <b>TRADE VETOED (LIVE NEWS / AI)</b>\nPair: <b>${scanRes.pick.bybitSymbol}</b> (${scanRes.pick.direction})\nSource: ${aiReview.provider}\nReason: ${aiReview.summary}`);
           throw new Error(`AI_VETO (${aiReview.provider}): ${aiReview.summary}`);
+        }
+        const dupCheck = checkDuplicateExposure(scanRes.pick.bybitSymbol, acct);
+        if (dupCheck.blocked) {
+          throw new Error(dupCheck.reason);
         }
         const exec = await executeLivePick(scanRes.pick, 'MANUAL_UI');
         return res.status(200).json(makeResponse(true, { systemTelemetry: telemetry, dailyGuard, aiReview, pick: scanRes.pick, exec }));
@@ -592,6 +604,6 @@ module.exports = async (req, res) => {
 
     return res.status(400).json(makeResponse(false, { error: `Unhandled action: ${action}` }, { errorCode: 'UNHANDLED_ACTION' }));
   } catch (err) {
-    return res.status(500).json(makeResponse(false, { error: err.message }, { errorCode: 'INTERNAL_ERROR' }));
+    return res.status(500).json(makeResponse(false, { error: sanitizeErrorForClient(err) }, { errorCode: 'INTERNAL_ERROR' }));
   }
 };
