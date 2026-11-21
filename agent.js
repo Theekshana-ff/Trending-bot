@@ -136,6 +136,7 @@
       if ($('inp-blacklist')) $('inp-blacklist').value = (data.botFilters.blacklist || []).join(',');
       if ($('inp-block-weekend')) $('inp-block-weekend').checked = Boolean(data.botFilters.blockWeekend);
       if ($('inp-session-only')) $('inp-session-only').checked = Boolean(data.botFilters.sessionOnly);
+      if ($('inp-strategy-mode')) $('inp-strategy-mode').value = data.botFilters.strategyMode === 'balanced' ? 'balanced' : 'strict';
     }
     if (Array.isArray(data.journal) && data.journal.length) {
       lastJournalData = data.journal;
@@ -322,20 +323,24 @@
       if ($('inp-wallet-alloc-en')?.checked) saveWalletAllocMode();
     });
 
-    $('btn-save-filters')?.addEventListener('click', async () => {
+    async function saveBotFilters() {
       try {
+        const mode = $('inp-strategy-mode')?.value === 'balanced' ? 'balanced' : 'strict';
         const res = await callAgent({
           action: 'set_bot_filters',
           whitelist: $('inp-whitelist')?.value || '',
           blacklist: $('inp-blacklist')?.value || '',
           blockWeekend: Boolean($('inp-block-weekend')?.checked),
-          sessionOnly: Boolean($('inp-session-only')?.checked)
+          sessionOnly: Boolean($('inp-session-only')?.checked),
+          strategyMode: mode
         });
         updateTelemetry(res);
-        logLine('FILTERS', 'Saved Coin Whitelist/Blacklist & Session Filters to Redis.', 'text-sky-300');
-        showBanner('v9.0 Filters Saved!', 'success');
+        logLine('FILTERS', `Saved Filters & Mode (${mode.toUpperCase()}) to Redis.`, 'text-sky-300');
+        showBanner(`Filters & ${mode.toUpperCase()} Mode Saved!`, 'success');
       } catch (e) { showBanner(e.message, 'error'); }
-    });
+    }
+    $('btn-save-filters')?.addEventListener('click', saveBotFilters);
+    $('inp-strategy-mode')?.addEventListener('change', saveBotFilters);
 
     $('btn-export-csv')?.addEventListener('click', () => {
       if (!lastJournalData.length) { showBanner('Click Sync Bybit first to load journal.', 'error'); return; }
