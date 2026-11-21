@@ -60,7 +60,7 @@ async function getBtcTrendContext() {
 
 async function runSixStagePipeline({
   coinMode, manualCoin, humanBias, timeframe = '15m', entryMode = 'limit_pullback',
-  riskPerTradePct, maxMarginPct, leverage, autoLeverage, availBal, openPositionsCount, openPositions = [], consecutiveLosses = 0, activeSymbols = new Set(), enforceVeto, walletAllocEnabled = false, walletAllocPct = 0.50, botFilters = null
+  riskPerTradePct, maxMarginPct, leverage, autoLeverage, availBal, openPositionsCount, openPositions = [], consecutiveLosses = 0, activeSymbols = new Set(), enforceVeto, walletAllocEnabled = false, walletAllocPct = 0.50, botFilters = null, recentClosed = []
 }) {
   const primaryTf = ALLOWED_TFS.has(timeframe) ? timeframe : '15m';
   const [{ tickers, instMap }, btcTrend, btcDom, btc5m, cbState] = await Promise.all([
