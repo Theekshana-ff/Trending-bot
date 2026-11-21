@@ -13,7 +13,7 @@ const {
   safeCompareSecret, makeResponse, acquireLock, releaseLock,
   validateRequestNonce, checkRateLimit, getTradingHalted, setTradingHalted,
   appendJournalEntry, getJournalEntries, getSystemHealth,
-  recordEquitySnapshot, getEquityHistory, checkDailyGuard, requireVerifiedRedis, savePositionMeta, sanitizeErrorForClient
+  recordEquitySnapshot, getEquityHistory, checkDailyGuard, requireVerifiedRedis, savePositionMeta, sanitizeErrorForClient, getAutoWalletAlloc, setAutoWalletAlloc, getBotFilters, setBotFilters, shouldSendDailyReport, markDailyReportSent
 } = require('../lib/modules/securityAndState');
 const {
   bybitV5Req, fetchBybitWalletAndPositions, cancelStaleLimitOrders, fetchBybitClosedPnlStats,
@@ -22,12 +22,13 @@ const {
 } = require('../lib/modules/bybitLiveClient');
 const { sendTelegramAlert } = require('../lib/modules/telegramNotifier');
 const { getAiProviderConfig, fetchFearAndGreed, fetchLiveCryptoHeadlines, runAiSecondOpinion, runGrokStyleChat } = require('../lib/modules/aiAgent');
+const { checkTradingSession, checkLiquidationSafety, checkCorrelationGuard, checkFundingCountdownGuard, computeCoinAnalytics } = require('../lib/modules/advancedGuards');
 
 const TOP_COINS = ['SOL', 'XRP', 'DOGE', 'SUI', 'ADA', 'OP', 'ARB', 'LINK', 'AVAX', 'NEAR', 'APT', 'INJ', 'RENDER', 'TRX', 'LTC', 'BNB', 'ETH', 'BTC'];
 const ALLOWED_TFS = new Set(['5m', '15m', '1h', '4h']);
 const ALLOWED_ACTIONS = new Set([
   'health', 'status', 'bybit_klines', 'analyze_only', 'scan_and_trade',
-  'live_close', 'emergency_stop', 'resume_trading', 'cron_tick', 'backtest', 'journal', 'ai_chat'
+  'live_close', 'emergency_stop', 'resume_trading', 'cron_tick', 'backtest', 'journal', 'ai_chat', 'set_auto_wallet_alloc', 'set_bot_filters'
 ]);
 
 function isServerLiveAuthorized() {
@@ -58,7 +59,7 @@ async function getBtcTrendContext() {
 
 async function runSixStagePipeline({
   coinMode, manualCoin, humanBias, timeframe = '15m', entryMode = 'limit_pullback',
-  riskPerTradePct, maxMarginPct, leverage, autoLeverage, availBal, openPositionsCount, consecutiveLosses = 0, activeSymbols = new Set(), enforceVeto
+  riskPerTradePct, maxMarginPct, leverage, autoLeverage, availBal, openPositionsCount, openPositions = [], consecutiveLosses = 0, activeSymbols = new Set(), enforceVeto, walletAllocEnabled = false, walletAllocPct = 0.50, botFilters = null
 }) {
   const primaryTf = ALLOWED_TFS.has(timeframe) ? timeframe : '15m';
   const [{ tickers, instMap }, btcTrend] = await Promise.all([
@@ -67,7 +68,19 @@ async function runSixStagePipeline({
   ]);
 
   const cleanManual = String(manualCoin || 'SOL').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/USDT$/, '');
-  const list = coinMode === 'manual' && cleanManual ? [cleanManual] : TOP_COINS;
+  let list = coinMode === 'manual' && cleanManual ? [cleanManual] : TOP_COINS;
+  if (coinMode !== 'manual' && botFilters) {
+    if (Array.isArray(botFilters.whitelist) && botFilters.whitelist.length) {
+      list = list.filter(c => botFilters.whitelist.includes(c));
+    }
+    if (Array.isArray(botFilters.blacklist) && botFilters.blacklist.length) {
+      list = list.filter(c => !botFilters.blacklist.includes(c));
+    }
+  }
+  const sessionCheck = checkTradingSession({ blockWeekend: Boolean(botFilters?.blockWeekend), sessionOnly: Boolean(botFilters?.sessionOnly) });
+  if (!sessionCheck.ok && enforceVeto) {
+    throw new Error(sessionCheck.reason);
+  }
 
   const candidates = list.map(coin => {
     const bybitSymbol = `${coin}USDT`;
@@ -135,6 +148,8 @@ async function runSixStagePipeline({
     const srCheck = checkSrProximity(cand.price, dir, structure.supportLevels, structure.resistanceLevels);
     const trapCheck = detectFalseBreakout(cPrimary, structure, dir);
     const oiCheck = checkOiFundingSqueeze({ direction: dir, fundingRate: cand.fundingRate, oiChangePct: oiData.oiChangePct });
+    const fundingCountdown = checkFundingCountdownGuard({ direction: dir, fundingRate: cand.fundingRate });
+    const corrCheck = checkCorrelationGuard({ symbol: cand.bybitSymbol, direction: dir, openPositions });
 
     const levels = computeAndValidateEntry({
       closedCandles: cPrimary, livePrice: cand.price, direction: dir,
@@ -151,7 +166,7 @@ async function runSixStagePipeline({
           minNotionalValue: cand.spec.minNotionalValue,
           riskPerTradePct, maxMarginPct, leverage, autoLeverage,
           atrPct: volVol.atrPct, signalQualityScore: preScore,
-          maxLeverage: cand.spec.maxLeverage, openPositionsCount, consecutiveLosses
+          maxLeverage: cand.spec.maxLeverage, openPositionsCount, consecutiveLosses, walletAllocEnabled, walletAllocPct
         })
       : { approved: false, orderQty: 0, leverage: leverage || 5, requiredMargin: 0, reason: levels.reason };
 
@@ -166,7 +181,13 @@ async function runSixStagePipeline({
     else if (!oiCheck.ok) noTradeReason = oiCheck.reason;
     else if (volVol.regime === 'EXTREME_VOLATILITY') noTradeReason = `NO_TRADE: Extreme volatility (${volVol.atrPct}% ATR).`;
     else if (!levels.valid) noTradeReason = levels.reason;
+    else if (!fundingCountdown.ok) noTradeReason = fundingCountdown.reason;
+    else if (!corrCheck.ok) noTradeReason = corrCheck.reason;
     else if (!risk.approved) noTradeReason = risk.reason;
+    else {
+      const liqCheck = checkLiquidationSafety({ entryPrice: levels.entry, slPrice: levels.sl, leverage: risk.leverage, direction: dir });
+      if (!liqCheck.ok) noTradeReason = liqCheck.reason;
+    }
 
     const decision = noTradeReason ? 'NO_TRADE' : dir;
     const btcContext = { trend: btcTrend.trend, aligned: !btcOpposing };
@@ -196,7 +217,7 @@ async function runSixStagePipeline({
       leverage: risk.leverage || leverage || 5,
       autoLeverageUsed: Boolean(risk.autoLeverageUsed),
       requiredMargin: risk.requiredMargin || 0,
-      entry, sl, tp1, tp,
+      entry, sl, tp1, tp, atr: volVol.atr,
       summaryNote: aiExplanation.summary
     };
   }));
@@ -230,7 +251,7 @@ async function executeLivePick(pick, sourceTag = 'MANUAL_UI') {
 
   const orderRes = await bybitV5Req('POST', '/v5/order/create', orderPayload);
   const orderVerification = await verifyOrderStatus(pick.bybitSymbol, orderRes?.orderId);
-  await savePositionMeta(pick.bybitSymbol, { entry: pick.entry, initialSl: pick.sl, direction: pick.direction });
+  await savePositionMeta(pick.bybitSymbol, { entry: pick.entry, initialSl: pick.sl, direction: pick.direction, atr: pick.atr || 0 });
 
   const journalEntry = await appendJournalEntry({
     type: 'LIVE_ORDER_OPEN',
@@ -349,8 +370,10 @@ module.exports = async (req, res) => {
           reconcileUnprotectedPositions(acct.positions, mkt.instMap || {})
         ]);
         for (const u of trailingUpdates) {
-          if (u.action === 'PARTIAL_TP1_50PCT_LOCKED') {
-            await sendTelegramAlert(`💰 <b>PARTIAL TP1 LOCKED (50%)</b>\nPair: <b>${u.symbol}</b>\nClosed Qty: ${u.closedQty} at +${u.rMultiple}R`);
+          if (u.action === 'PARTIAL_TP1_40PCT_LOCKED' || u.action === 'PARTIAL_TP1_50PCT_LOCKED') {
+            await sendTelegramAlert(`💰 <b>TP1 LOCKED (40%)</b>\nPair: <b>${u.symbol}</b>\nClosed Qty: ${u.closedQty} at +${u.rMultiple}R`);
+          } else if (u.action === 'PARTIAL_TP2_30PCT_LOCKED') {
+            await sendTelegramAlert(`💰💰 <b>TP2 LOCKED (30%)</b>\nPair: <b>${u.symbol}</b>\nClosed Qty: ${u.closedQty} at +${u.rMultiple}R`);
           } else if (u.action === 'BREAKEVEN_AND_TRAILING_SET') {
             await sendTelegramAlert(`🛡️ <b>BREAKEVEN & TRAILING ACTIVE</b>\nPair: <b>${u.symbol}</b>\nBE SL: <code>${u.bePrice}</code> | Trail: ${u.trailDist}`);
           }
@@ -363,10 +386,13 @@ module.exports = async (req, res) => {
         const totalExposureCount = acct.positions.length + (acct.openOrders || []).length;
         if (redisOk && acct.openOrdersVerified !== false && !haltedState.halted && !dailyGuard.locked && isServerLiveAuthorized() && isAutoExecuteEnabled() && totalExposureCount < 3) {
           try {
+            const [walletAlloc, botFilters] = await Promise.all([getAutoWalletAlloc(), getBotFilters()]);
             const scanRes = await runSixStagePipeline({
               coinMode: 'auto', humanBias: 'ai_100', timeframe: '15m', entryMode: 'limit_pullback',
               riskPerTradePct: cappedRiskPct, maxMarginPct: cappedMarginPct, autoLeverage: true,
-              availBal: acct.wallet.availableBalance, openPositionsCount: totalExposureCount, activeSymbols, enforceVeto: true
+              availBal: acct.wallet.availableBalance, openPositionsCount: totalExposureCount, openPositions: acct.positions, activeSymbols, enforceVeto: true, botFilters,
+              walletAllocEnabled: walletAlloc.enabled,
+              walletAllocPct: (walletAlloc.pct || 50) / 100
             });
             if (scanRes.pick.signalQualityScore >= 75) {
               const [fearGreed, newsRes, pnlStats] = await Promise.all([
@@ -389,6 +415,17 @@ module.exports = async (req, res) => {
           } catch (e) {
             autoExecResult = { skipped: true, reason: e.message };
           }
+        }
+
+        if (await shouldSendDailyReport()) {
+          const stats = await fetchBybitClosedPnlStats(50);
+          await sendTelegramAlert(
+            `📈 <b>DAILY BOT REPORT (UTC)</b>\n` +
+            `Equity: <b>$${acct.wallet.totalEquity.toFixed(2)}</b> (${dailyGuard.dailyPnlPct >= 0 ? '+' : ''}${dailyGuard.dailyPnlPct}%)\n` +
+            `Win Rate (50): <b>${stats.winRate}%</b> (${stats.wins}W / ${stats.losses}L)\n` +
+            `Closed PnL: <b>$${stats.totalClosedPnl}</b> | Best: $${stats.bestTrade}`
+          );
+          await markDailyReportSent();
         }
 
         const logRec = await appendJournalEntry({
@@ -435,18 +472,43 @@ module.exports = async (req, res) => {
     };
 
     if (action === 'status') {
-      const [acct, pnlStats, journal, equityCurve, fearGreed] = await Promise.all([
+      const [acct, pnlStats, journal, equityCurve, fearGreed, autoWalletAlloc, botFilters] = await Promise.all([
         fetchBybitWalletAndPositions(),
         fetchBybitClosedPnlStats(50),
         getJournalEntries(),
         getEquityHistory(),
-        fetchFearAndGreed()
+        fetchFearAndGreed(),
+        getAutoWalletAlloc(),
+        getBotFilters()
       ]);
       await recordEquitySnapshot(acct.wallet.totalEquity);
       const dailyGuard = await checkDailyGuard(acct.wallet.totalEquity, { maxDailyLossPct, dailyProfitTargetPct });
-      return res.status(200).json(makeResponse(true, { systemTelemetry: telemetry, dailyGuard, fearGreed, pnlStats, journal, equityCurve, ...acct }));
+      const coinAnalytics = computeCoinAnalytics(pnlStats.recent || []);
+      return res.status(200).json(makeResponse(true, { systemTelemetry: telemetry, dailyGuard, fearGreed, autoWalletAlloc, botFilters, coinAnalytics, pnlStats, journal, equityCurve, ...acct }));
     }
 
+
+
+    if (action === 'set_auto_wallet_alloc') {
+      const saved = await setAutoWalletAlloc({
+        enabled: body.enabled === true,
+        pct: Number(body.pct || 50)
+      });
+      await appendJournalEntry({ type: 'AUTO_WALLET_ALLOC_UPDATED', ...saved });
+      return res.status(200).json(makeResponse(true, { autoWalletAlloc: saved }));
+    }
+
+
+    if (action === 'set_bot_filters') {
+      const saved = await setBotFilters({
+        whitelist: body.whitelist,
+        blacklist: body.blacklist,
+        blockWeekend: body.blockWeekend === true,
+        sessionOnly: body.sessionOnly === true
+      });
+      await appendJournalEntry({ type: 'BOT_FILTERS_UPDATED', ...saved });
+      return res.status(200).json(makeResponse(true, { botFilters: saved }));
+    }
 
     if (action === 'ai_chat') {
       const question = String(body.question || '').trim();
@@ -498,7 +560,9 @@ module.exports = async (req, res) => {
         autoLeverage: body.autoLeverage !== false,
         availBal: acct.wallet.availableBalance,
         openPositionsCount: acct.positions.length,
-        enforceVeto: false
+        enforceVeto: false,
+        walletAllocEnabled: body.walletAllocEnabled === true,
+        walletAllocPct: Number(body.walletAllocPct || 50) / 100
       });
       const [fearGreed, newsRes, pnlStats] = await Promise.all([
         fetchFearAndGreed(),
@@ -549,9 +613,13 @@ module.exports = async (req, res) => {
           autoLeverage: body.autoLeverage !== false,
           availBal: acct.wallet.availableBalance,
           openPositionsCount: totalExposureCount,
+          openPositions: acct.positions,
+          botFilters: await getBotFilters(),
           consecutiveLosses: pnlStatsPre.consecutiveLosses || 0,
           activeSymbols,
-          enforceVeto: true
+          enforceVeto: true,
+          walletAllocEnabled: body.walletAllocEnabled === true,
+          walletAllocPct: Number(body.walletAllocPct || 50) / 100
         });
         const [fearGreed, newsRes, pnlStats] = await Promise.all([
           fetchFearAndGreed(),
