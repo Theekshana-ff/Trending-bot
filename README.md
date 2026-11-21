@@ -61,7 +61,11 @@
 | `TELEGRAM_CHAT_ID` | *(optional)* | Telegram Chat ID එක |
 
 > **වැදගත්:** Vercel Environment Variables වෙනස් කළාට පස්සේ **Deployments → Redeploy** කරන්න.
-
+>
+> අලුත් Optional Vercel Environment Variables (අවශ්‍ය නම් පමණක්):
+|`ENABLE_PYRAMIDING`| =true (Pyramiding ON කරන්න නම් — default false)
+> |`DEAD_TRADE_HOURS`|=6 (Dead Trade Killer පැය ගණන — default 6)
+> |`MACRO_BLACKOUT_WINDOWS`|=FOMC|2026-12-16T19:00:00Z (Macro news blackout times)
 ---
 
 ## පියවර 3: Test & Go-Live Checklist
