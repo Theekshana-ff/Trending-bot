@@ -13,15 +13,15 @@ const {
   safeCompareSecret, makeResponse, acquireLock, releaseLock,
   validateRequestNonce, checkRateLimit, getTradingHalted, setTradingHalted,
   appendJournalEntry, getJournalEntries, getSystemHealth,
-  recordEquitySnapshot, getEquityHistory, checkDailyGuard, requireVerifiedRedis, savePositionMeta, sanitizeErrorForClient, getAutoWalletAlloc, setAutoWalletAlloc, getBotFilters, setBotFilters, shouldSendDailyReport, markDailyReportSent, tripCircuitBreaker, getCircuitBreaker, recordSlippage, getSlippageStats
+  recordEquitySnapshot, getEquityHistory, checkDailyGuard, requireVerifiedRedis, savePositionMeta, sanitizeErrorForClient, getAutoWalletAlloc, setAutoWalletAlloc, getBotFilters, setBotFilters, shouldSendDailyReport, markDailyReportSent, tripCircuitBreaker, getCircuitBreaker, recordSlippage, getSlippageStats, hasLossPostMortemSent, markLossPostMortemSent
 } = require('../lib/modules/securityAndState');
 const {
-  bybitV5Req, fetchBybitWalletAndPositions, cancelStaleLimitOrders, fetchBybitClosedPnlStats,
+  bybitV5Req, fetchBybitWalletAndPositions, chaseOpenLimitOrders, cancelStaleLimitOrders, fetchBybitClosedPnlStats,
   configureIsolatedAndLeverage, applyTrailingAndBreakeven,
   closeVerifiedLivePosition, executeLiveEmergencyStop, verifyOrderStatus, checkDuplicateExposure, reconcileUnprotectedPositions
 } = require('../lib/modules/bybitLiveClient');
 const { sendTelegramAlert } = require('../lib/modules/telegramNotifier');
-const { getAiProviderConfig, fetchFearAndGreed, fetchLiveCryptoHeadlines, runAiSecondOpinion, runGrokStyleChat } = require('../lib/modules/aiAgent');
+const { getAiProviderConfig, fetchFearAndGreed, fetchLiveCryptoHeadlines, runAiSecondOpinion, runGrokStyleChat, runAiLossPostMortem } = require('../lib/modules/aiAgent');
 const { checkTradingSession, checkLiquidationSafety, checkCorrelationGuard, checkFundingCountdownGuard, computeCoinAnalytics } = require('../lib/modules/advancedGuards');
 const { calcVWAP, checkVwapFilter, detectDivergence, evaluateOrderBookImbalance, fetchBtcDominanceContext, checkBtcDominanceFilter, detectVolatilitySqueeze, detectFlashCrash, evaluateSelfLearningCoin, checkMacroCalendarGuard, selectStrategyRegime } = require('../lib/modules/profitEngine');
 
@@ -178,9 +178,10 @@ async function runSixStagePipeline({
       dir = regimeInfo.mrDirection;
     }
 
-    const adxFail = !volVol.isTrending && !regimeInfo.allowMeanReversion;
+    const isBalanced = botFilters?.strategyMode === 'balanced';
+    const adxFail = !volVol.isTrending && !(isBalanced && volVol.adx >= 18) && !regimeInfo.allowMeanReversion;
     const rsiCheck = regimeInfo.allowMeanReversion ? { ok: true } : checkRsiGuard(volVol.rsi, dir);
-    const vwapCheck = regimeInfo.allowMeanReversion ? { ok: true, vwap: vwapVal } : checkVwapFilter(cand.price, vwapVal, dir);
+    const vwapCheck = (regimeInfo.allowMeanReversion || isBalanced) ? { ok: true, vwap: vwapVal } : checkVwapFilter(cand.price, vwapVal, dir);
     const obiCheck = evaluateOrderBookImbalance(obiRaw, dir);
     const btcDomCheck = checkBtcDominanceFilter({ coin: cand.coin, direction: dir, btcDom, btcTrend: btcTrend.trend });
     const selfLearn = evaluateSelfLearningCoin(cand.bybitSymbol, recentClosed);
@@ -196,7 +197,7 @@ async function runSixStagePipeline({
       tickSize: cand.spec.tickSize, atr: volVol.atr, spreadPct: cand.spreadPct,
       fundingRate: cand.fundingRate, entryMode, ema20: volVol.ema20, orderBlock: smc.orderBlock, fib,
       supportLevels: structure.supportLevels, resistanceLevels: structure.resistanceLevels,
-      bestBid: obiRaw.bestBid || 0, bestAsk: obiRaw.bestAsk || 0, multiCandleConfirm: true
+      bestBid: obiRaw.bestBid || 0, bestAsk: obiRaw.bestAsk || 0, multiCandleConfirm: !isBalanced
     });
 
     const preScore = (mtf.ok ? 30 : 10) + (volVol.isTrending ? 15 : 0) + (smc.sweep !== 'NONE' ? 12 : 0)
@@ -211,7 +212,7 @@ async function runSixStagePipeline({
           minNotionalValue: cand.spec.minNotionalValue,
           riskPerTradePct, maxMarginPct, leverage, autoLeverage,
           atrPct: volVol.atrPct, signalQualityScore: preScore,
-          maxLeverage: cand.spec.maxLeverage, openPositionsCount, consecutiveLosses, walletAllocEnabled, walletAllocPct
+          maxLeverage: cand.spec.maxLeverage, openPositionsCount, consecutiveLosses, walletAllocEnabled, walletAllocPct, symbol: cand.bybitSymbol
         })
       : { approved: false, orderQty: 0, leverage: leverage || 5, requiredMargin: 0, reason: levels.reason };
 
@@ -447,11 +448,15 @@ module.exports = async (req, res) => {
         await recordEquitySnapshot(acct.wallet.totalEquity);
         const dailyGuard = await checkDailyGuard(acct.wallet.totalEquity, { maxDailyLossPct, dailyProfitTargetPct, strict: true });
 
-        const [trailingUpdates, cancelledStale, slReconciled] = await Promise.all([
+        const [trailingUpdates, chasedOrders, cancelledStale, slReconciled] = await Promise.all([
           applyTrailingAndBreakeven(acct.positions, mkt.instMap || {}),
+          chaseOpenLimitOrders(acct.openOrders || [], mkt.tickers || {}, mkt.instMap || {}),
           cancelStaleLimitOrders(acct.openOrders || [], 45),
           reconcileUnprotectedPositions(acct.positions, mkt.instMap || {})
         ]);
+        for (const ch of chasedOrders) {
+          await sendTelegramAlert(`🎯 <b>SMART CHASE LIMIT</b>\nPair: <b>${ch.symbol}</b> (${ch.side})\nAdjusted Entry: <code>${ch.oldPrice}</code> → <code>${ch.newPrice}</code>`);
+        }
         for (const u of trailingUpdates) {
           if (u.action === 'PARTIAL_TP1_40PCT_LOCKED' || u.action === 'PARTIAL_TP1_50PCT_LOCKED') {
             await sendTelegramAlert(`💰 <b>TP1 LOCKED (40%)</b>\nPair: <b>${u.symbol}</b>\nClosed Qty: ${u.closedQty} at +${u.rMultiple}R`);
@@ -481,7 +486,8 @@ module.exports = async (req, res) => {
               walletAllocEnabled: walletAlloc.enabled,
               walletAllocPct: (walletAlloc.pct || 50) / 100
             });
-            if (scanRes.pick.signalQualityScore >= 75) {
+            const minAutoScore = botFilters?.strategyMode === 'balanced' ? 60 : 75;
+            if (scanRes.pick.signalQualityScore >= minAutoScore) {
               const [fearGreed, newsRes, pnlStats] = await Promise.all([
                 fetchFearAndGreed(),
                 fetchLiveCryptoHeadlines(6, scanRes.pick.bybitSymbol),
@@ -503,6 +509,24 @@ module.exports = async (req, res) => {
             autoExecResult = { skipped: true, reason: e.message };
           }
         }
+
+        // v10.0.3 #5: AI Loss Post-Mortem Report for latest closed losing trade
+        try {
+          const recentPnl = await fetchBybitClosedPnlStats(5);
+          const latestTrade = (recentPnl.recent || [])[0];
+          if (latestTrade && Number(latestTrade.closedPnl || 0) < 0) {
+            const tradeKey = `${latestTrade.symbol}_${latestTrade.updatedTime || latestTrade.createdTime || latestTrade.closedPnl}`;
+            const ageMs = Date.now() - Number(latestTrade.updatedTime || Date.now());
+            if (ageMs < 6 * 3600 * 1000 && !(await hasLossPostMortemSent(tradeKey))) {
+              const fg = await fetchFearAndGreed().catch(() => null);
+              const pm = await runAiLossPostMortem({ trade: latestTrade, fearGreed: fg });
+              if (pm.ok && pm.report) {
+                await sendTelegramAlert(`🧠 <b>AI LOSS POST-MORTEM (${latestTrade.symbol})</b>\nPnL: <b>$${Number(latestTrade.closedPnl).toFixed(4)}</b>\n${pm.report}`);
+              }
+              await markLossPostMortemSent(tradeKey);
+            }
+          }
+        } catch (e) {}
 
         if (await shouldSendDailyReport()) {
           const stats = await fetchBybitClosedPnlStats(50);
@@ -591,7 +615,8 @@ module.exports = async (req, res) => {
         whitelist: body.whitelist,
         blacklist: body.blacklist,
         blockWeekend: body.blockWeekend === true,
-        sessionOnly: body.sessionOnly === true
+        sessionOnly: body.sessionOnly === true,
+        strategyMode: body.strategyMode === 'balanced' ? 'balanced' : 'strict'
       });
       await appendJournalEntry({ type: 'BOT_FILTERS_UPDATED', ...saved });
       return res.status(200).json(makeResponse(true, { botFilters: saved }));
@@ -647,6 +672,7 @@ module.exports = async (req, res) => {
         autoLeverage: body.autoLeverage !== false,
         availBal: acct.wallet.availableBalance,
         openPositionsCount: acct.positions.length,
+        botFilters: await getBotFilters(),
         enforceVeto: false,
         walletAllocEnabled: body.walletAllocEnabled === true,
         walletAllocPct: Number(body.walletAllocPct || 50) / 100
