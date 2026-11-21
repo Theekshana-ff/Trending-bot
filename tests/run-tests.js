@@ -300,6 +300,58 @@ function mockRes() {
     assert.strictEqual(fLoaded.blockWeekend, true);
   });
 
+  await test('v10.0: VWAP, Divergence, OBI, Squeeze, Flash Crash, Self-Learning, Macro & Regime', async () => {
+    const {
+      calcVWAP, checkVwapFilter, detectDivergence, evaluateOrderBookImbalance,
+      checkBtcDominanceFilter, calcChandelierTrail, detectVolatilitySqueeze,
+      detectFlashCrash, evaluateSelfLearningCoin, checkMacroCalendarGuard, selectStrategyRegime
+    } = require('../lib/modules/profitEngine');
+    const { recordSlippage, getSlippageStats, tripCircuitBreaker, getCircuitBreaker } = require('../lib/modules/securityAndState');
+
+    const c = makeSyntheticCandles(60, 100, 0.4);
+    const vwap = calcVWAP(c, 48);
+    assert.ok(vwap > 0);
+    assert.strictEqual(checkVwapFilter(vwap * 0.98, vwap, 'LONG').ok, false);
+    assert.strictEqual(checkVwapFilter(vwap * 1.02, vwap, 'LONG').ok, true);
+
+    const div = detectDivergence(c);
+    assert.ok(typeof div.type === 'string');
+
+    assert.strictEqual(evaluateOrderBookImbalance({ ok: true, obi: -0.6 }, 'LONG').ok, false);
+    assert.strictEqual(evaluateOrderBookImbalance({ ok: true, obi: 0.3 }, 'LONG').scoreBonus, 6);
+
+    assert.strictEqual(checkBtcDominanceFilter({ coin: 'SOL', direction: 'LONG', btcDom: { ok: true, dominance: 63, delta: 0.4 }, btcTrend: 'BEAR' }).ok, false);
+
+    const trail = calcChandelierTrail({ atr: 1.5, entryPrice: 100, multiplier: 2.0 });
+    assert.strictEqual(trail, 3.0);
+
+    const sq = detectVolatilitySqueeze(c, 20);
+    assert.ok(typeof sq.inSqueeze === 'boolean');
+
+    const crash = detectFlashCrash([[1, 100, 100, 96.5, 97, 500], [2, 100, 100, 96.5, 97, 500]], 2.5);
+    assert.strictEqual(crash.triggered, true);
+
+    await tripCircuitBreaker('Test crash', 5);
+    assert.strictEqual((await getCircuitBreaker()).active, true);
+
+    const slBlock = evaluateSelfLearningCoin('BADUSDT', [
+      { symbol: 'BADUSDT', closedPnl: -2 }, { symbol: 'BADUSDT', closedPnl: -3 },
+      { symbol: 'BADUSDT', closedPnl: -1 }, { symbol: 'BADUSDT', closedPnl: 0.5 }
+    ]);
+    assert.strictEqual(slBlock.ok, false);
+
+    const now = Date.UTC(2026, 10, 21, 14, 0, 0);
+    assert.strictEqual(checkMacroCalendarGuard({ nowMs: now, windowMinutes: 30, rawWindows: 'CPI|2026-11-21T14:15:00Z' }).ok, false);
+
+    const reg = selectStrategyRegime({ adx: 16, rsi: 30, price: 100, supportLevels: [99.5], resistanceLevels: [110] });
+    assert.strictEqual(reg.regime, 'MEAN_REVERSION');
+    assert.strictEqual(reg.mrDirection, 'LONG');
+
+    await recordSlippage('SOLUSDT', 100, 100.1);
+    const slip = await getSlippageStats('SOLUSDT');
+    assert.strictEqual(slip.count, 1);
+  });
+
   console.log(`\nRESULTS: ${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);
 })();
