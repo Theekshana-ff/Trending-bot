@@ -247,6 +247,59 @@ function mockRes() {
     assert.strictEqual(rMan.leverage, 15);
   });
 
+  await test('v8.3.2: Auto Wallet % Mode (10%-100%) sizes margin with Auto-Leverage', async () => {
+    const { setAutoWalletAlloc, getAutoWalletAlloc } = require('../lib/modules/securityAndState');
+    const saved = await setAutoWalletAlloc({ enabled: true, pct: 50 });
+    assert.strictEqual(saved.enabled, true);
+    assert.strictEqual(saved.pct, 50);
+    const loaded = await getAutoWalletAlloc();
+    assert.strictEqual(loaded.enabled, true);
+    assert.strictEqual(loaded.pct, 50);
+
+    const r50 = evaluateLiveRisk({
+      availBal: 100, entryPrice: 100, slPrice: 98, qtyStep: 0.1, minOrderQty: 0.1, maxOrderQty: 1000,
+      autoLeverage: true, atrPct: 0.8, signalQualityScore: 80, walletAllocEnabled: true, walletAllocPct: 0.50
+    });
+    assert.strictEqual(r50.approved, true);
+    assert.strictEqual(r50.walletAllocUsed, true);
+    assert.strictEqual(r50.walletAllocPct, 50);
+    assert.ok(r50.requiredMargin <= 51 && r50.requiredMargin >= 40);
+  });
+
+  await test('v9.0: Session, Liquidation, Correlation, Funding Countdown & Coin Analytics', async () => {
+    const { checkTradingSession, checkLiquidationSafety, checkCorrelationGuard, checkFundingCountdownGuard, computeCoinAnalytics } = require('../lib/modules/advancedGuards');
+    const { setBotFilters, getBotFilters } = require('../lib/modules/securityAndState');
+
+    // Weekend check (2026-11-21 is Saturday UTC)
+    const sat = Date.UTC(2026, 10, 21, 12, 0, 0);
+    assert.strictEqual(checkTradingSession({ nowMs: sat, blockWeekend: true }).ok, false);
+
+    // Liquidation check: 20x leverage (~4.5% liq), 6% SL must fail
+    assert.strictEqual(checkLiquidationSafety({ entryPrice: 100, slPrice: 94, leverage: 20, direction: 'LONG' }).ok, false);
+    assert.strictEqual(checkLiquidationSafety({ entryPrice: 100, slPrice: 98, leverage: 10, direction: 'LONG' }).ok, true);
+
+    // Correlation guard
+    const corr = checkCorrelationGuard({
+      symbol: 'AVAXUSDT', direction: 'LONG',
+      openPositions: [{ symbol: 'SOLUSDT', side: 'Buy' }, { symbol: 'SUIUSDT', side: 'Buy' }]
+    });
+    assert.strictEqual(corr.ok, false);
+
+    // Funding countdown (07:50 UTC -> 10m before 08:00 UTC)
+    const preFund = Date.UTC(2026, 10, 20, 7, 50, 0);
+    assert.strictEqual(checkFundingCountdownGuard({ direction: 'LONG', fundingRate: 0.0005, nowMs: preFund }).ok, false);
+
+    // Coin Analytics & Filters
+    const ca = computeCoinAnalytics([{ symbol: 'SOLUSDT', closedPnl: 5 }, { symbol: 'SOLUSDT', closedPnl: -1 }]);
+    assert.strictEqual(ca[0].symbol, 'SOLUSDT');
+    assert.strictEqual(ca[0].winRate, 50);
+
+    const fSaved = await setBotFilters({ whitelist: 'SOL,BTC', blacklist: 'DOGE', blockWeekend: true, sessionOnly: true });
+    assert.deepStrictEqual(fSaved.whitelist, ['SOL', 'BTC']);
+    const fLoaded = await getBotFilters();
+    assert.strictEqual(fLoaded.blockWeekend, true);
+  });
+
   console.log(`\nRESULTS: ${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);
 })();
