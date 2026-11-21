@@ -4,7 +4,7 @@
 // Manual Timeframe (5m/15m/1h/4h), S/R Zone Guard + Chart Lines, Chart Patterns, Daily Loss/Profit Lock,
 // OI & Funding Squeeze Filter, Instant Telegram Trade Alerts.
 
-const { getBybitMarketData, fetchKlines, fetchOpenInterest } = require('../lib/modules/marketData');
+const { getBybitMarketData, fetchKlines, fetchOpenInterest, fetchOrderBookImbalance } = require('../lib/modules/marketData');
 const { analyzeVolumeVolatility, evaluateMTF, detectTrend, checkRsiGuard } = require('../lib/modules/indicators');
 const { analyzeMarketStructure, checkSrProximity, detectChartPatterns, detectFalseBreakout, analyzeLiquidityAndSMC, analyzeFibonacci, analyzeElliottWave } = require('../lib/modules/structureSmc');
 const { computeAndValidateEntry, evaluateLiveRisk, checkOiFundingSqueeze, formatBybitPrice } = require('../lib/modules/riskAndValidation');
@@ -13,7 +13,7 @@ const {
   safeCompareSecret, makeResponse, acquireLock, releaseLock,
   validateRequestNonce, checkRateLimit, getTradingHalted, setTradingHalted,
   appendJournalEntry, getJournalEntries, getSystemHealth,
-  recordEquitySnapshot, getEquityHistory, checkDailyGuard, requireVerifiedRedis, savePositionMeta, sanitizeErrorForClient, getAutoWalletAlloc, setAutoWalletAlloc, getBotFilters, setBotFilters, shouldSendDailyReport, markDailyReportSent
+  recordEquitySnapshot, getEquityHistory, checkDailyGuard, requireVerifiedRedis, savePositionMeta, sanitizeErrorForClient, getAutoWalletAlloc, setAutoWalletAlloc, getBotFilters, setBotFilters, shouldSendDailyReport, markDailyReportSent, tripCircuitBreaker, getCircuitBreaker, recordSlippage, getSlippageStats
 } = require('../lib/modules/securityAndState');
 const {
   bybitV5Req, fetchBybitWalletAndPositions, cancelStaleLimitOrders, fetchBybitClosedPnlStats,
@@ -23,12 +23,13 @@ const {
 const { sendTelegramAlert } = require('../lib/modules/telegramNotifier');
 const { getAiProviderConfig, fetchFearAndGreed, fetchLiveCryptoHeadlines, runAiSecondOpinion, runGrokStyleChat } = require('../lib/modules/aiAgent');
 const { checkTradingSession, checkLiquidationSafety, checkCorrelationGuard, checkFundingCountdownGuard, computeCoinAnalytics } = require('../lib/modules/advancedGuards');
+const { calcVWAP, checkVwapFilter, detectDivergence, evaluateOrderBookImbalance, fetchBtcDominanceContext, checkBtcDominanceFilter, detectVolatilitySqueeze, detectFlashCrash, evaluateSelfLearningCoin, checkMacroCalendarGuard, selectStrategyRegime } = require('../lib/modules/profitEngine');
 
 const TOP_COINS = ['SOL', 'XRP', 'DOGE', 'SUI', 'ADA', 'OP', 'ARB', 'LINK', 'AVAX', 'NEAR', 'APT', 'INJ', 'RENDER', 'TRX', 'LTC', 'BNB', 'ETH', 'BTC'];
 const ALLOWED_TFS = new Set(['5m', '15m', '1h', '4h']);
 const ALLOWED_ACTIONS = new Set([
   'health', 'status', 'bybit_klines', 'analyze_only', 'scan_and_trade',
-  'live_close', 'emergency_stop', 'resume_trading', 'cron_tick', 'backtest', 'journal', 'ai_chat', 'set_auto_wallet_alloc', 'set_bot_filters'
+  'live_close', 'emergency_stop', 'resume_trading', 'cron_tick', 'backtest', 'journal', 'ai_chat', 'set_auto_wallet_alloc', 'set_bot_filters', 'weekly_optimize'
 ]);
 
 function isServerLiveAuthorized() {
@@ -62,10 +63,30 @@ async function runSixStagePipeline({
   riskPerTradePct, maxMarginPct, leverage, autoLeverage, availBal, openPositionsCount, openPositions = [], consecutiveLosses = 0, activeSymbols = new Set(), enforceVeto, walletAllocEnabled = false, walletAllocPct = 0.50, botFilters = null
 }) {
   const primaryTf = ALLOWED_TFS.has(timeframe) ? timeframe : '15m';
-  const [{ tickers, instMap }, btcTrend] = await Promise.all([
+  const [{ tickers, instMap }, btcTrend, btcDom, btc5m, cbState] = await Promise.all([
     getBybitMarketData(),
-    getBtcTrendContext()
+    getBtcTrendContext(),
+    fetchBtcDominanceContext(),
+    fetchKlines('BTC', '5m', 10).catch(() => ({ ok: false, closedCandles: [] })),
+    getCircuitBreaker()
   ]);
+
+  // v10.0 #15: Flash Crash / Spike Circuit Breaker
+  if (cbState.active && enforceVeto) {
+    throw new Error(cbState.reason || 'NO_TRADE: Flash Crash Circuit Breaker active.');
+  }
+  if (btc5m.ok) {
+    const fc = detectFlashCrash(btc5m.closedCandles);
+    if (fc.triggered) {
+      await tripCircuitBreaker(fc.reason, 60);
+      if (enforceVeto) throw new Error(fc.reason);
+    }
+  }
+  // v10.0 #17: Macro Economic Calendar Guard (FOMC/CPI/NFP)
+  const macroCheck = checkMacroCalendarGuard();
+  if (!macroCheck.ok && enforceVeto) {
+    throw new Error(macroCheck.reason);
+  }
 
   const cleanManual = String(manualCoin || 'SOL').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/USDT$/, '');
   let list = coinMode === 'manual' && cleanManual ? [cleanManual] : TOP_COINS;
@@ -97,9 +118,11 @@ async function runSixStagePipeline({
 
   const results = await Promise.all(candidates.map(async cand => {
     const safeK = (tf, lim) => fetchKlines(cand.coin, tf, lim).catch(e => ({ ok: false, reason: e.message, closedCandles: [] }));
-    const [k1d, k4h, k1h, k15m, k5m, oiData] = await Promise.all([
+    const [k1d, k4h, k1h, k15m, k5m, oiData, obiRaw, slipStats] = await Promise.all([
       safeK('1d', 60), safeK('4h', 60), safeK('1h', 60), safeK('15m', 90), safeK('5m', 60),
-      fetchOpenInterest(cand.bybitSymbol, '15min')
+      fetchOpenInterest(cand.bybitSymbol, '15min'),
+      fetchOrderBookImbalance(cand.bybitSymbol, 10),
+      getSlippageStats(cand.bybitSymbol)
     ]);
 
     const tfMap = { '5m': k5m, '15m': k15m, '1h': k1h, '4h': k4h };
@@ -143,9 +166,26 @@ async function runSixStagePipeline({
       (dir === 'LONG' && btcTrend.trend === 'BEAR') ||
       (dir === 'SHORT' && btcTrend.trend === 'BULL')
     );
-    const adxFail = !volVol.isTrending;
-    const rsiCheck = checkRsiGuard(volVol.rsi, dir);
-    const srCheck = checkSrProximity(cand.price, dir, structure.supportLevels, structure.resistanceLevels);
+    const vwapVal = calcVWAP(cPrimary, 48);
+    const divergence = detectDivergence(cPrimary);
+    const squeeze = detectVolatilitySqueeze(cPrimary, 20);
+    const regimeInfo = selectStrategyRegime({
+      adx: volVol.adx, rsi: volVol.rsi, price: cand.price,
+      supportLevels: structure.supportLevels, resistanceLevels: structure.resistanceLevels,
+      divergence, patternData
+    });
+    if (regimeInfo.allowMeanReversion && regimeInfo.mrDirection && humanBias === 'ai_100') {
+      dir = regimeInfo.mrDirection;
+    }
+
+    const adxFail = !volVol.isTrending && !regimeInfo.allowMeanReversion;
+    const rsiCheck = regimeInfo.allowMeanReversion ? { ok: true } : checkRsiGuard(volVol.rsi, dir);
+    const vwapCheck = regimeInfo.allowMeanReversion ? { ok: true, vwap: vwapVal } : checkVwapFilter(cand.price, vwapVal, dir);
+    const obiCheck = evaluateOrderBookImbalance(obiRaw, dir);
+    const btcDomCheck = checkBtcDominanceFilter({ coin: cand.coin, direction: dir, btcDom, btcTrend: btcTrend.trend });
+    const selfLearn = evaluateSelfLearningCoin(cand.bybitSymbol, recentClosed);
+    const highSlippage = slipStats && slipStats.count >= 3 && slipStats.avgSlipPct > 0.25;
+    const srCheck = regimeInfo.allowMeanReversion ? { ok: true } : checkSrProximity(cand.price, dir, structure.supportLevels, structure.resistanceLevels);
     const trapCheck = detectFalseBreakout(cPrimary, structure, dir);
     const oiCheck = checkOiFundingSqueeze({ direction: dir, fundingRate: cand.fundingRate, oiChangePct: oiData.oiChangePct });
     const fundingCountdown = checkFundingCountdownGuard({ direction: dir, fundingRate: cand.fundingRate });
@@ -154,10 +194,15 @@ async function runSixStagePipeline({
     const levels = computeAndValidateEntry({
       closedCandles: cPrimary, livePrice: cand.price, direction: dir,
       tickSize: cand.spec.tickSize, atr: volVol.atr, spreadPct: cand.spreadPct,
-      fundingRate: cand.fundingRate, entryMode, ema20: volVol.ema20, orderBlock: smc.orderBlock, fib
+      fundingRate: cand.fundingRate, entryMode, ema20: volVol.ema20, orderBlock: smc.orderBlock, fib,
+      supportLevels: structure.supportLevels, resistanceLevels: structure.resistanceLevels,
+      bestBid: obiRaw.bestBid || 0, bestAsk: obiRaw.bestAsk || 0, multiCandleConfirm: true
     });
 
-    const preScore = (mtf.ok ? 30 : 10) + (volVol.isTrending ? 15 : 0) + (smc.sweep !== 'NONE' ? 12 : 0) + (patternData.bias === dir ? patternData.scoreBonus : 0) + (volVol.volumeConfirmed ? 12 : 0);
+    const preScore = (mtf.ok ? 30 : 10) + (volVol.isTrending ? 15 : 0) + (smc.sweep !== 'NONE' ? 12 : 0)
+      + (patternData.bias === dir ? patternData.scoreBonus : 0) + (volVol.volumeConfirmed ? 12 : 0)
+      + (divergence.bias === dir ? divergence.scoreBonus : 0) + obiCheck.scoreBonus
+      + (squeeze.scoreBonus || 0) + (selfLearn.scoreBonus || 0);
 
     const risk = levels.valid
       ? evaluateLiveRisk({
@@ -178,6 +223,11 @@ async function runSixStagePipeline({
     else if (!rsiCheck.ok) noTradeReason = rsiCheck.reason;
     else if (!srCheck.ok) noTradeReason = srCheck.reason;
     else if (trapCheck.isTrap) noTradeReason = trapCheck.reason;
+    else if (!vwapCheck.ok) noTradeReason = vwapCheck.reason;
+    else if (!obiCheck.ok) noTradeReason = obiCheck.reason;
+    else if (!btcDomCheck.ok) noTradeReason = btcDomCheck.reason;
+    else if (!selfLearn.ok) noTradeReason = selfLearn.reason;
+    else if (highSlippage) noTradeReason = `NO_TRADE: High historical slippage on ${cand.bybitSymbol} (avg ${slipStats.avgSlipPct}%).`;
     else if (!oiCheck.ok) noTradeReason = oiCheck.reason;
     else if (volVol.regime === 'EXTREME_VOLATILITY') noTradeReason = `NO_TRADE: Extreme volatility (${volVol.atrPct}% ATR).`;
     else if (!levels.valid) noTradeReason = levels.reason;
@@ -251,6 +301,9 @@ async function executeLivePick(pick, sourceTag = 'MANUAL_UI') {
 
   const orderRes = await bybitV5Req('POST', '/v5/order/create', orderPayload);
   const orderVerification = await verifyOrderStatus(pick.bybitSymbol, orderRes?.orderId);
+  if (orderVerification?.verified && orderVerification.avgPrice > 0) {
+    await recordSlippage(pick.bybitSymbol, pick.entry, orderVerification.avgPrice);
+  }
   await savePositionMeta(pick.bybitSymbol, { entry: pick.entry, initialSl: pick.sl, direction: pick.direction, atr: pick.atr || 0 });
 
   const journalEntry = await appendJournalEntry({
@@ -345,6 +398,36 @@ module.exports = async (req, res) => {
     const cappedRiskPct = Math.min(envMaxRiskPct, Math.max(0.0025, Number(body.riskPerTradePct || 0.015)));
     const cappedMarginPct = Math.min(envMaxMarginPct, Math.max(0.05, Number(body.maxMarginPct || 0.20)));
 
+
+    // v10.0 #20: Automated Weekly Strategy Optimizer (Walk-Forward across top coins -> Telegram Report)
+    if (action === 'weekly_optimize') {
+      const expectedCron = (process.env.CRON_SECRET || '').trim();
+      const providedCron = String(req.headers?.['x-cron-secret'] || req.headers?.authorization?.replace(/^Bearer\s+/i, '') || '').trim();
+      if (!expectedCron || !safeCompareSecret(providedCron, expectedCron)) {
+        return res.status(401).json(makeResponse(false, { error: 'Unauthorized: Valid CRON_SECRET required.' }, { errorCode: 'CRON_UNAUTHORIZED' }));
+      }
+      const coins = ['BTC', 'ETH', 'SOL', 'XRP', 'SUI'];
+      const reports = [];
+      for (const coin of coins) {
+        const k = await fetchKlines(coin, '15m', 200).catch(() => ({ ok: false }));
+        if (!k.ok) continue;
+        const wf = runWalkForward(k.closedCandles);
+        if (wf.ok) {
+          reports.push({
+            symbol: `${coin}USDT`,
+            oosTrades: wf.outOfSample?.sampleCount || 0,
+            oosWinRate: wf.outOfSample?.winRate || 0,
+            oosExpR: wf.outOfSample?.expectancyR || 0,
+            approved: wf.enabled
+          });
+        }
+      }
+      reports.sort((a, b) => b.oosExpR - a.oosExpR);
+      const summaryLines = reports.map(r => `- <b>${r.symbol}</b>: WR ${r.oosWinRate}% | Exp ${r.oosExpR}R (${r.oosTrades} trades)`).join('\n') || 'No valid samples';
+      await sendTelegramAlert(`🧠 <b>WEEKLY WALK-FORWARD OPTIMIZER (v10.0)</b>\n${summaryLines}`);
+      return res.status(200).json(makeResponse(true, { optimizer: reports }));
+    }
+
     // Cron Guardian: Monitors positions, Partial TP1 (50%), Breakeven/Trailing Stop, Daily Lock, Auto-Pilot & Telegram
     if (action === 'cron_tick') {
       const expectedCron = (process.env.CRON_SECRET || '').trim();
@@ -375,7 +458,11 @@ module.exports = async (req, res) => {
           } else if (u.action === 'PARTIAL_TP2_30PCT_LOCKED') {
             await sendTelegramAlert(`💰💰 <b>TP2 LOCKED (30%)</b>\nPair: <b>${u.symbol}</b>\nClosed Qty: ${u.closedQty} at +${u.rMultiple}R`);
           } else if (u.action === 'BREAKEVEN_AND_TRAILING_SET') {
-            await sendTelegramAlert(`🛡️ <b>BREAKEVEN & TRAILING ACTIVE</b>\nPair: <b>${u.symbol}</b>\nBE SL: <code>${u.bePrice}</code> | Trail: ${u.trailDist}`);
+            await sendTelegramAlert(`🛡️ <b>CHANDELIER TRAILING ACTIVE</b>\nPair: <b>${u.symbol}</b>\nBE SL: <code>${u.bePrice}</code> | Trail: ${u.trailDist}`);
+          } else if (u.action === 'PYRAMID_SCALED_IN_25PCT') {
+            await sendTelegramAlert(`🔥 <b>PYRAMID SCALED IN (+25%)</b>\nPair: <b>${u.symbol}</b> at +${u.rMultiple}R`);
+          } else if (u.action === 'DEAD_TRADE_EXITED') {
+            await sendTelegramAlert(`⏱️ <b>DEAD TRADE AUTO-EXITED</b>\nPair: <b>${u.symbol}</b> (${u.rMultiple}R) to save funding fees.`);
           }
         }
 
@@ -386,11 +473,11 @@ module.exports = async (req, res) => {
         const totalExposureCount = acct.positions.length + (acct.openOrders || []).length;
         if (redisOk && acct.openOrdersVerified !== false && !haltedState.halted && !dailyGuard.locked && isServerLiveAuthorized() && isAutoExecuteEnabled() && totalExposureCount < 3) {
           try {
-            const [walletAlloc, botFilters] = await Promise.all([getAutoWalletAlloc(), getBotFilters()]);
+            const [walletAlloc, botFilters, histPnl] = await Promise.all([getAutoWalletAlloc(), getBotFilters(), fetchBybitClosedPnlStats(50).catch(() => ({ recent: [] }))]);
             const scanRes = await runSixStagePipeline({
               coinMode: 'auto', humanBias: 'ai_100', timeframe: '15m', entryMode: 'limit_pullback',
               riskPerTradePct: cappedRiskPct, maxMarginPct: cappedMarginPct, autoLeverage: true,
-              availBal: acct.wallet.availableBalance, openPositionsCount: totalExposureCount, openPositions: acct.positions, activeSymbols, enforceVeto: true, botFilters,
+              availBal: acct.wallet.availableBalance, openPositionsCount: totalExposureCount, openPositions: acct.positions, activeSymbols, enforceVeto: true, botFilters, recentClosed: histPnl.recent || [],
               walletAllocEnabled: walletAlloc.enabled,
               walletAllocPct: (walletAlloc.pct || 50) / 100
             });
@@ -616,6 +703,7 @@ module.exports = async (req, res) => {
           openPositions: acct.positions,
           botFilters: await getBotFilters(),
           consecutiveLosses: pnlStatsPre.consecutiveLosses || 0,
+          recentClosed: pnlStatsPre.recent || [],
           activeSymbols,
           enforceVeto: true,
           walletAllocEnabled: body.walletAllocEnabled === true,
