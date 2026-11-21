@@ -4,6 +4,7 @@
   let chart = null;
   let candleSeries = null;
   let activePriceLines = [];
+  let lastJournalData = [];
 
   function logLine(tag, msg, colorClass = 'text-slate-300') {
     const box = $('terminal-logs');
@@ -125,7 +126,19 @@
       }).join(' ');
       $('equity-line')?.setAttribute('points', pts);
     }
+    if (Array.isArray(data.coinAnalytics) && $('coin-analytics-box')) {
+      $('coin-analytics-box').innerHTML = data.coinAnalytics.length
+        ? data.coinAnalytics.map(c => `<div class="bg-slate-900/80 border border-slate-800 rounded p-2"><div class="font-bold text-white">${c.symbol}</div><div class="${c.netPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${c.netPnl >= 0 ? '+' : ''}$${c.netPnl}</div><div class="text-[10px] text-slate-400">WR ${c.winRate}% (${c.wins}W/${c.losses}L)</div></div>`).join('')
+        : '<span>No closed coin analytics yet.</span>';
+    }
+    if (data.botFilters) {
+      if ($('inp-whitelist')) $('inp-whitelist').value = (data.botFilters.whitelist || []).join(',');
+      if ($('inp-blacklist')) $('inp-blacklist').value = (data.botFilters.blacklist || []).join(',');
+      if ($('inp-block-weekend')) $('inp-block-weekend').checked = Boolean(data.botFilters.blockWeekend);
+      if ($('inp-session-only')) $('inp-session-only').checked = Boolean(data.botFilters.sessionOnly);
+    }
     if (Array.isArray(data.journal) && data.journal.length) {
+      lastJournalData = data.journal;
       const lastOrder = data.journal.find(j => j.type === 'LIVE_ORDER_OPEN');
       if (lastOrder) {
         $('why-box').textContent = `${lastOrder.symbol} ${lastOrder.orderType || ''} ${lastOrder.direction} (${lastOrder.leverage}x Iso): ${lastOrder.why || 'Verified'}`;
@@ -159,6 +172,16 @@
     }
     if (data.fearGreed && $('pill-fng')) $('pill-fng').textContent = `F&G: ${data.fearGreed.value} (${data.fearGreed.classification})`;
     if (tel?.aiProvider && $('badge-ai-provider')) $('badge-ai-provider').textContent = `AI: ${tel.aiProvider}`;
+    if (data.autoWalletAlloc) {
+      if ($('inp-wallet-alloc-en')) $('inp-wallet-alloc-en').checked = Boolean(data.autoWalletAlloc.enabled);
+      if ($('inp-wallet-alloc-pct')) $('inp-wallet-alloc-pct').value = String(data.autoWalletAlloc.pct || 50);
+      if ($('badge-wallet-alloc')) {
+        $('badge-wallet-alloc').textContent = data.autoWalletAlloc.enabled
+          ? `ACTIVE: ${data.autoWalletAlloc.pct}% Wallet Margin (Auto-Lev)`
+          : 'OFF (Normal Risk Mode)';
+        $('badge-wallet-alloc').className = data.autoWalletAlloc.enabled ? 'text-[11px] text-amber-400 font-bold mono' : 'text-[11px] text-slate-400 mono';
+      }
+    }
     renderAnalytics(data);
   }
 
@@ -255,7 +278,9 @@
       maxDailyLossPct: Number($('inp-daily-loss').value || 5),
       dailyProfitTargetPct: Number($('inp-daily-profit').value || 10),
       autoLeverage: $('inp-auto-lev').value === 'auto' || $('inp-auto-lev').value === 'true',
-      leverage: ($('inp-auto-lev').value === 'auto' || $('inp-auto-lev').value === 'true') ? 5 : Math.min(20, Math.max(5, Number($('inp-auto-lev').value) || 5))
+      leverage: ($('inp-auto-lev').value === 'auto' || $('inp-auto-lev').value === 'true') ? 5 : Math.min(20, Math.max(5, Number($('inp-auto-lev').value) || 5)),
+      walletAllocEnabled: Boolean($('inp-wallet-alloc-en')?.checked),
+      walletAllocPct: Number($('inp-wallet-alloc-pct')?.value || 50)
     };
   }
 
@@ -278,6 +303,50 @@
       loadChartCandles(coin, $('inp-tf').value);
     });
     $('btn-refresh')?.addEventListener('click', refreshStatus);
+
+    async function saveWalletAllocMode() {
+      const enabled = Boolean($('inp-wallet-alloc-en')?.checked);
+      const pct = Number($('inp-wallet-alloc-pct')?.value || 50);
+      try {
+        const res = await callAgent({ action: 'set_auto_wallet_alloc', enabled, pct });
+        updateTelemetry(res);
+        logLine('AUTO-ALLOC', enabled ? `Enabled ${pct}% Wallet Auto-Trading Mode (Saved to Redis).` : 'Disabled Wallet % Mode (Back to Normal Risk).', 'text-amber-300');
+        showBanner(enabled ? `Auto Wallet Mode ON: ${pct}% Margin + Auto Leverage` : 'Auto Wallet Mode OFF (Normal Risk Mode)', 'info');
+      } catch (e) {
+        logLine('ERROR', e.message, 'text-rose-400');
+        showBanner(e.message, 'error');
+      }
+    }
+    $('inp-wallet-alloc-en')?.addEventListener('change', saveWalletAllocMode);
+    $('inp-wallet-alloc-pct')?.addEventListener('change', () => {
+      if ($('inp-wallet-alloc-en')?.checked) saveWalletAllocMode();
+    });
+
+    $('btn-save-filters')?.addEventListener('click', async () => {
+      try {
+        const res = await callAgent({
+          action: 'set_bot_filters',
+          whitelist: $('inp-whitelist')?.value || '',
+          blacklist: $('inp-blacklist')?.value || '',
+          blockWeekend: Boolean($('inp-block-weekend')?.checked),
+          sessionOnly: Boolean($('inp-session-only')?.checked)
+        });
+        updateTelemetry(res);
+        logLine('FILTERS', 'Saved Coin Whitelist/Blacklist & Session Filters to Redis.', 'text-sky-300');
+        showBanner('v9.0 Filters Saved!', 'success');
+      } catch (e) { showBanner(e.message, 'error'); }
+    });
+
+    $('btn-export-csv')?.addEventListener('click', () => {
+      if (!lastJournalData.length) { showBanner('Click Sync Bybit first to load journal.', 'error'); return; }
+      const headers = ['ts', 'type', 'symbol', 'direction', 'qty', 'leverage', 'entry', 'sl', 'tp1', 'score', 'reason'];
+      const rows = [headers.join(',')].concat(lastJournalData.map(j => headers.map(h => JSON.stringify(j[h] ?? '')).join(',')));
+      const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `bybit-bot-journal-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+    });
 
     async function sendAiChat() {
       const inp = $('inp-ai-chat');
