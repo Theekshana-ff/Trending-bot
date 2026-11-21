@@ -1,0 +1,17 @@
+name: Weekly Walk-Forward Strategy Optimizer
+
+on:
+  schedule:
+    - cron: '15 0 * * 0' # Every Sunday 00:15 UTC
+  workflow_dispatch:
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Weekly Optimizer Endpoint
+        run: |
+          curl -sS -X POST "${{ secrets.BOT_BASE_URL }}/api/futures-agent" \
+            -H "Content-Type: application/json" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            -d '{"action":"weekly_optimize"}'
