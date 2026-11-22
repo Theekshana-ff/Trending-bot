@@ -140,6 +140,7 @@
       if ($('inp-pyramiding')) $('inp-pyramiding').checked = Boolean(data.botFilters.pyramidingEnabled);
       if ($('inp-sniper-scaling')) $('inp-sniper-scaling').checked = Boolean(data.botFilters.sniperLimitScaling);
       if ($('inp-top-mover')) $('inp-top-mover').checked = Boolean(data.botFilters.topMoverScanner);
+      if ($('inp-ea-mode')) $('inp-ea-mode').checked = Boolean(data.botFilters.eaMode);
     }
     if (Array.isArray(data.journal) && data.journal.length) {
       lastJournalData = data.journal;
@@ -332,6 +333,7 @@
         const pyr = Boolean($('inp-pyramiding')?.checked);
         const sniperScale = Boolean($('inp-sniper-scaling')?.checked);
         const topMover = Boolean($('inp-top-mover')?.checked);
+        const eaMode = Boolean($('inp-ea-mode')?.checked);
         const res = await callAgent({
           action: 'set_bot_filters',
           whitelist: $('inp-whitelist')?.value || '',
@@ -341,7 +343,8 @@
           strategyMode: mode,
           pyramidingEnabled: pyr,
           sniperLimitScaling: sniperScale,
-          topMoverScanner: topMover
+          topMoverScanner: topMover,
+          eaMode
         });
         updateTelemetry(res);
         logLine('FILTERS', `Saved: ${mode.toUpperCase()} · Pyr:${pyr ? 'ON' : 'OFF'} · Scale:${sniperScale ? 'ON' : 'OFF'} · TopMover:${topMover ? 'ON' : 'OFF'}`, 'text-sky-300');
