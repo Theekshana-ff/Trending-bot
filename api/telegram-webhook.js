@@ -1,4 +1,4 @@
-// File: api/telegram-webhook.js (v12.3 — Full 10 Updates + Start Next Trade + EA Mode ON/OFF)
+// File: api/telegram-webhook.js (v12.5 — Full 10 Updates + Start Next Trade + EA Mode ON/OFF)
 const {
   getTradingHalted, setTradingHalted, appendJournalEntry,
   getBotFilters, setBotFilters
@@ -69,8 +69,8 @@ async function handleCommand(cmd, parts, req) {
   if (cmd === '/start' || cmd === '/menu' || cmd === '/help') {
     return {
       text:
-        `🤖 *Bybit Trading Bot Control Panel (v12.3)*\n` +
-        `EA Mode: *${eaEnabled ? 'ON 🟢 (EA Engine Active)' : 'OFF ⚪ (Normal Bot Run)'}*\n\n` +
+        `🤖 *Bybit v6 Sniper + EA Control Panel*\n` +
+        `EA Mode: *${eaEnabled ? 'ON 🟢 (EA Engine Active)' : 'OFF ⚪ (Normal v6 Sniper)'}*\n\n` +
         `පහළ buttons tap කරන්න හෝ මේ commands යවන්න:\n` +
         `• \`/ea SOLUSDT\` — Run EA MTF Analysis\n` +
         `• \`/ea_toggle\` — EA Mode ON / OFF\n` +
@@ -90,8 +90,8 @@ async function handleCommand(cmd, parts, req) {
     await appendJournalEntry({ type: 'TG_EA_MODE_TOGGLE', eaMode: eaEnabled });
     return {
       text: eaEnabled
-        ? `🧠 *EA STRATEGY MODE: ON 🟢*\nදැන් bot එකේ trades ඔක්කොම EA Multi-Strategy + MTF (5M/15M/1H/4H) engine එක හරහා filter වෙලා run වෙනවා.`
-        : `⚪ *EA STRATEGY MODE: OFF*\nEA Mode off කළා. දැන් bot එක සාමාන්‍ය (Normal) විදියට run වෙනවා.`,
+        ? `🧠 *EA STRATEGY MODE: ON 🟢*\nදැන් trades ඔක්කොම v6 Sniper + EA Multi-Strategy MTF (5M/15M/1H/4H) confirmation එක්ක run වෙනවා.`
+        : `⚪ *EA STRATEGY MODE: OFF*\nEA Mode off කළා. දැන් ඔයාගේ Normal v6 Sniper bot එක සාමාන්‍ය විදියටම run වෙනවා.`,
       markup: buildMainMenu(eaEnabled)
     };
   }
@@ -99,9 +99,7 @@ async function handleCommand(cmd, parts, req) {
   if (cmd === 'cmd_ea_scan' || (cmd === '/ea' && parts[1])) {
     const sym = (parts[1] || 'BTCUSDT').toUpperCase();
     const ea = await runEAAnalysis(sym);
-    const slTpLine = ea.suggestedSL
-      ? `\nSL: *$${ea.suggestedSL}* | TP: *$${ea.suggestedTP}*`
-      : '';
+    const slTpLine = ea.suggestedSL ? `\nSL: *$${ea.suggestedSL}* | TP: *$${ea.suggestedTP}*` : '';
     return {
       text:
         `🧠 *EA ANALYSIS: ${ea.symbol}*\n` +
@@ -125,7 +123,7 @@ async function handleCommand(cmd, parts, req) {
       text:
         `📊 *BYBIT BOT STATUS*\n` +
         `Halted: *${halted.halted ? 'YES' : 'NO'}*\n` +
-        `EA Mode: *${eaEnabled ? 'ON 🟢' : 'OFF ⚪ (Normal)'}*\n` +
+        `EA Mode: *${eaEnabled ? 'ON 🟢' : 'OFF ⚪ (Normal v6)'}*\n` +
         `Mode: *${String(currentFilters.strategyMode || 'strict').toUpperCase()}*\n` +
         `Risk: *${currentFilters.riskPct || 'Default'}%* | Lev: *${currentFilters.leverage || 'Default'}x*\n` +
         `Avail: *$${acct.wallet.availableBalance.toFixed(2)}* | Equity: *$${acct.wallet.totalEquity.toFixed(2)}*\n\n` +
@@ -137,12 +135,20 @@ async function handleCommand(cmd, parts, req) {
   if (cmd === '/nexttrade' || cmd === 'cmd_next_trade') {
     await setTradingHalted(false);
     const host = req.headers.host;
-    let triggerNote = 'Trading enabled for next cycle.';
-    if (host) {
+    const cronSecret = (process.env.CRON_SECRET || '').trim();
+    let triggerNote = 'Trading enabled for next cron cycle.';
+    if (host && cronSecret) {
       try {
-        const resp = await fetch(`https://${host}/api/futures-agent`, { method: 'POST' });
+        const resp = await fetch(`https://${host}/api/futures-agent`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-cron-secret': cronSecret
+          },
+          body: JSON.stringify({ action: 'cron_tick' })
+        });
         triggerNote = resp.ok
-          ? `Futures Agent triggered (${eaEnabled ? 'EA Mode ON' : 'Normal Mode'})!`
+          ? `v6 Sniper Agent triggered immediately (${eaEnabled ? 'EA Mode ON' : 'Normal Mode'})!`
           : `Agent responded with status ${resp.status}.`;
       } catch (e) {
         triggerNote = `Trigger sent (${e.message})`;
@@ -172,9 +178,7 @@ async function handleCommand(cmd, parts, req) {
   }
 
   if (cmd === 'cmd_mode_strict' || cmd === 'cmd_mode_balanced' || (cmd === '/mode' && parts[1])) {
-    const targetMode = (cmd === 'cmd_mode_balanced' || parts[1]?.toLowerCase() === 'balanced')
-      ? 'balanced'
-      : 'strict';
+    const targetMode = (cmd === 'cmd_mode_balanced' || parts[1]?.toLowerCase() === 'balanced') ? 'balanced' : 'strict';
     await setBotFilters({ ...currentFilters, strategyMode: targetMode });
     return { text: `⚙️ Strategy Mode switched to *${targetMode.toUpperCase()}*.`, markup: buildMainMenu(eaEnabled) };
   }
@@ -217,9 +221,7 @@ async function handleCommand(cmd, parts, req) {
       : bybitEaHelpers.closePartialPosition;
     const res50 = await fn(parts[1].toUpperCase(), 0.5);
     return {
-      text: res50.ok
-        ? `✂️ *50% Partial Close (${parts[1].toUpperCase()}):* ${res50.message}`
-        : `⚠️ ${res50.message}`,
+      text: res50.ok ? `✂️ *50% Partial Close (${parts[1].toUpperCase()}):* ${res50.message}` : `⚠️ ${res50.message}`,
       markup: buildMainMenu(eaEnabled)
     };
   }
@@ -230,9 +232,7 @@ async function handleCommand(cmd, parts, req) {
       : bybitEaHelpers.moveStopLossToBreakeven;
     const resBe = await fn(parts[1].toUpperCase());
     return {
-      text: resBe.ok
-        ? `🛡️ *Breakeven SL (${parts[1].toUpperCase()}):* ${resBe.message}`
-        : `⚠️ ${resBe.message}`,
+      text: resBe.ok ? `🛡️ *Breakeven SL (${parts[1].toUpperCase()}):* ${resBe.message}` : `⚠️ ${resBe.message}`,
       markup: buildMainMenu(eaEnabled)
     };
   }
@@ -243,10 +243,7 @@ async function handleCommand(cmd, parts, req) {
       : bybitEaHelpers.fetchClosedPnlHistory;
     const list = await fn(5);
     const lines = list
-      .map(t => {
-        const icon = Number(t.closedPnl) >= 0 ? '✅' : '🔻';
-        return `${icon} *${t.symbol}* (${t.side}): *$${Number(t.closedPnl).toFixed(2)}*`;
-      })
+      .map(t => `${Number(t.closedPnl) >= 0 ? '✅' : '🔻'} *${t.symbol}* (${t.side}): *$${Number(t.closedPnl).toFixed(2)}*`)
       .join('\n') || 'No recent closed trades.';
     return { text: `📜 *LAST 5 CLOSED TRADES*\n${lines}`, markup: buildMainMenu(eaEnabled) };
   }
