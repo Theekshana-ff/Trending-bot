@@ -192,7 +192,7 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 pt-2 border-t border-slate-800/80 text-xs mono">
         <input id="inp-whitelist" type="text" placeholder="Whitelist (e.g. SOL,BTC,ETH)" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-emerald-300" />
         <input id="inp-blacklist" type="text" placeholder="Blacklist (e.g. DOGE,TRX)" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-rose-300" />
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2">
           <label class="flex items-center gap-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 cursor-pointer select-none">
             <input id="inp-block-weekend" type="checkbox" class="rounded bg-slate-950" />
             <span>No Weekend</span>
@@ -205,6 +205,18 @@
             <option value="strict">Strict Mode</option>
             <option value="balanced">Balanced Mode</option>
           </select>
+          <label title="Auto scale-in +25% position size on winning trades at +2R (after BE SL)" class="flex items-center gap-1 bg-slate-900 border border-emerald-500/50 text-emerald-300 font-bold rounded-lg px-2 py-1.5 cursor-pointer select-none">
+            <input id="inp-pyramiding" type="checkbox" class="rounded bg-slate-950 text-emerald-500" />
+            <span>Pyramiding</span>
+          </label>
+          <label title="Split Limit entry 50% at pullback + 50% at deeper Support/OB level" class="flex items-center gap-1 bg-slate-900 border border-sky-500/50 text-sky-300 font-bold rounded-lg px-2 py-1.5 cursor-pointer select-none">
+            <input id="inp-sniper-scaling" type="checkbox" class="rounded bg-slate-950 text-sky-500" />
+            <span>Sniper Scaling</span>
+          </label>
+          <label title="Scan top 8 highest-momentum volatility & volume movers instead of top 4" class="flex items-center gap-1 bg-slate-900 border border-purple-500/50 text-purple-300 font-bold rounded-lg px-2 py-1.5 cursor-pointer select-none">
+            <input id="inp-top-mover" type="checkbox" class="rounded bg-slate-950 text-purple-500" />
+            <span>Top-Mover</span>
+          </label>
         </div>
         <div class="flex gap-2">
           <button id="btn-save-filters" class="flex-1 px-2.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold cursor-pointer">Save Filters</button>
@@ -307,7 +319,7 @@
     <section class="card p-4">
       <div class="flex items-center justify-between mb-2">
         <h2 class="text-xs font-bold uppercase tracking-wider text-emerald-400 mono">📊 PER-COIN ANALYTICS (WIN RATE &amp; NET PNL)</h2>
-        <span class="text-[10px] text-slate-400 mono">v9.0 Multi-TP (40/30/30) · Liq Guard · Corr Guard</span>
+        <span class="text-[10px] text-slate-400 mono">v11.0 Runner TP (25/25/50) · Profit Vault · Best-Hour · Liq Guard · Corr Guard</span>
       </div>
       <div id="coin-analytics-box" class="text-xs mono text-slate-400 grid grid-cols-2 sm:grid-cols-4 gap-2">
         <span>Click Sync Bybit to load per-coin analytics.</span>

@@ -137,6 +137,9 @@
       if ($('inp-block-weekend')) $('inp-block-weekend').checked = Boolean(data.botFilters.blockWeekend);
       if ($('inp-session-only')) $('inp-session-only').checked = Boolean(data.botFilters.sessionOnly);
       if ($('inp-strategy-mode')) $('inp-strategy-mode').value = data.botFilters.strategyMode === 'balanced' ? 'balanced' : 'strict';
+      if ($('inp-pyramiding')) $('inp-pyramiding').checked = Boolean(data.botFilters.pyramidingEnabled);
+      if ($('inp-sniper-scaling')) $('inp-sniper-scaling').checked = Boolean(data.botFilters.sniperLimitScaling);
+      if ($('inp-top-mover')) $('inp-top-mover').checked = Boolean(data.botFilters.topMoverScanner);
     }
     if (Array.isArray(data.journal) && data.journal.length) {
       lastJournalData = data.journal;
@@ -326,21 +329,30 @@
     async function saveBotFilters() {
       try {
         const mode = $('inp-strategy-mode')?.value === 'balanced' ? 'balanced' : 'strict';
+        const pyr = Boolean($('inp-pyramiding')?.checked);
+        const sniperScale = Boolean($('inp-sniper-scaling')?.checked);
+        const topMover = Boolean($('inp-top-mover')?.checked);
         const res = await callAgent({
           action: 'set_bot_filters',
           whitelist: $('inp-whitelist')?.value || '',
           blacklist: $('inp-blacklist')?.value || '',
           blockWeekend: Boolean($('inp-block-weekend')?.checked),
           sessionOnly: Boolean($('inp-session-only')?.checked),
-          strategyMode: mode
+          strategyMode: mode,
+          pyramidingEnabled: pyr,
+          sniperLimitScaling: sniperScale,
+          topMoverScanner: topMover
         });
         updateTelemetry(res);
-        logLine('FILTERS', `Saved Filters & Mode (${mode.toUpperCase()}) to Redis.`, 'text-sky-300');
-        showBanner(`Filters & ${mode.toUpperCase()} Mode Saved!`, 'success');
+        logLine('FILTERS', `Saved: ${mode.toUpperCase()} · Pyr:${pyr ? 'ON' : 'OFF'} · Scale:${sniperScale ? 'ON' : 'OFF'} · TopMover:${topMover ? 'ON' : 'OFF'}`, 'text-sky-300');
+        showBanner(`Saved: ${mode.toUpperCase()} · Pyr:${pyr ? 'ON' : 'OFF'} · Scale:${sniperScale ? 'ON' : 'OFF'} · TopMover:${topMover ? 'ON' : 'OFF'}`, 'success');
       } catch (e) { showBanner(e.message, 'error'); }
     }
     $('btn-save-filters')?.addEventListener('click', saveBotFilters);
     $('inp-strategy-mode')?.addEventListener('change', saveBotFilters);
+    $('inp-pyramiding')?.addEventListener('change', saveBotFilters);
+    $('inp-sniper-scaling')?.addEventListener('change', saveBotFilters);
+    $('inp-top-mover')?.addEventListener('change', saveBotFilters);
 
     $('btn-export-csv')?.addEventListener('click', () => {
       if (!lastJournalData.length) { showBanner('Click Sync Bybit first to load journal.', 'error'); return; }
