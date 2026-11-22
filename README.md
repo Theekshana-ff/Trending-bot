@@ -1,5 +1,6 @@
 # Bybit V5 Live Trading Bot (v8.3.0 Hardened)
 
+
 මෙය **Bybit V5 Linear Futures** සඳහා සකස් කළ 6-Stage Quant Trading Bot එකකි. Singapore (`sin1`) Vercel server එකේ deploy වන අතර, **Groq AI Live News Auto-VETO**, **Redis Safety Locks**, සහ **Automated Tests** සමඟ ක්‍රියා කරයි.
 
 ---
