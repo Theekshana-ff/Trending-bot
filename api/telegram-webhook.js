@@ -1,6 +1,6 @@
 // File: api/telegram-webhook.js (v12.6 — Updates #2 Top-3 EA Scanner, #9 Chart Snapshot, #10 Weekly Report)
 const {
-  getTradingHalted, setTradingHalted, appendJournalEntry,
+  getTradingHalted, setTradingHalted, appendJournalEntry, getJournalEntries,
   getBotFilters, setBotFilters
 } = require('../lib/modules/securityAndState');
 const bybitClient = require('../lib/modules/bybitLiveClient');
@@ -11,6 +11,7 @@ const {
   buildQuickChartUrl
 } = require('../lib/modules/telegramAlerts');
 const { runEAAnalysis, scanTopCoinsEA } = require('../lib/modules/eaStrategyEngine');
+const ultraPro = require('../lib/modules/ultraProEngine');
 
 function buildMainMenu(eaEnabled = false) {
   const eaLabel = eaEnabled ? '🧠 EA Mode: ON 🟢' : '⚪ EA Mode: OFF';
@@ -26,6 +27,10 @@ function buildMainMenu(eaEnabled = false) {
       ],
       [
         { text: '🔍 EA Chart (BTC)', callback_data: 'cmd_ea_scan' },
+        { text: '🔥 Funding Squeeze', callback_data: 'cmd_squeeze' }
+      ],
+      [
+        { text: '🌍 Sessions (SL Time)', callback_data: 'cmd_sessions' },
         { text: '📅 Weekly Report', callback_data: 'cmd_weekly' }
       ],
       [
@@ -33,11 +38,14 @@ function buildMainMenu(eaEnabled = false) {
         { text: '📈 Daily PnL', callback_data: 'cmd_pnl' }
       ],
       [
-        { text: '⚙️ Strict Mode', callback_data: 'cmd_mode_strict' },
-        { text: '⚖️ Balanced Mode', callback_data: 'cmd_mode_balanced' }
+        { text: '⚖️ EA vs Normal', callback_data: 'cmd_compare' },
+        { text: '⚙️ Strict Mode', callback_data: 'cmd_mode_strict' }
       ],
       [
-        { text: '✅ Resume', callback_data: 'cmd_resume' },
+        { text: '⚖️ Balanced Mode', callback_data: 'cmd_mode_balanced' },
+        { text: '✅ Resume', callback_data: 'cmd_resume' }
+      ],
+      [
         { text: '🚨 Emergency Stop', callback_data: 'cmd_stop' }
       ]
     ]
@@ -188,6 +196,52 @@ async function handleCommand(cmd, parts, req) {
   if (cmd === 'cmd_weekly' || cmd === '/weekly') {
     const reportText = await buildWeeklyReportText();
     return { text: reportText, markup: buildMainMenu(eaEnabled) };
+  }
+
+  // Ultra Pro: Funding Rate Squeeze Hunter (#17)
+  if (cmd === 'cmd_squeeze' || cmd === '/squeeze') {
+    const list = await ultraPro.scanFundingRateSqueezes(5);
+    if (!list.length) {
+      return { text: `🔥 *FUNDING SQUEEZE RADAR*
+No extreme funding rate squeezes right now.`, markup: buildMainMenu(eaEnabled) };
+    }
+    const lines = list.map(x =>
+      `• *${x.symbol}* ($${x.price}) | Funding: *${x.fundingRatePct}%* | 24h: *${x.chg24h}%*
+  _${x.squeezeType}_`
+    ).join('\n');
+    return { text: `🔥 *FUNDING RATE SQUEEZE HUNTER*\n\n${lines}`, markup: buildMainMenu(eaEnabled) };
+  }
+
+  // v14.0 Ultra Pro Max: EA Mode vs Normal v6 Performance Compare
+  if (cmd === 'cmd_compare' || cmd === '/compare') {
+    const [journal, history] = await Promise.all([
+      getJournalEntries().catch(() => []),
+      bybitEaHelpers.fetchClosedPnlHistory(50).catch(() => [])
+    ]);
+    const cmp = ultraPro.computeModeComparison(journal, history);
+    return {
+      text:
+        `⚖️ *EA MODE vs NORMAL v6 PERFORMANCE*\n\n` +
+        `🧠 *EA Mode:*\n` +
+        `• Win Rate: *${cmp.ea.winRate}%* (${cmp.ea.wins}W / ${cmp.ea.losses}L)\n` +
+        `• Net PnL: *$${cmp.ea.netPnl.toFixed(2)}*\n\n` +
+        `⚡ *Normal v6 Sniper:*\n` +
+        `• Win Rate: *${cmp.normal.winRate}%* (${cmp.normal.wins}W / ${cmp.normal.losses}L)\n` +
+        `• Net PnL: *$${cmp.normal.netPnl.toFixed(2)}*`,
+      markup: buildMainMenu(eaEnabled)
+    };
+  }
+
+  // Ultra Pro: Market Sessions Schedule (Sri Lanka Time + UTC)
+  if (cmd === 'cmd_sessions' || cmd === '/sessions') {
+    const cur = ultraPro.getCurrentSessionInfo();
+    const lines = ultraPro.MARKET_SESSIONS.map(s =>
+      `${s.emoji} *${s.label}*: ${s.slTime} (${String(s.utcHour).padStart(2, '0')}:00 UTC)`
+    ).join('\n');
+    return {
+      text: `🌍 *MARKET SESSIONS (AUTO ALERTS ON)*\nCurrent Active: *${cur.name}*\n\n${lines}`,
+      markup: buildMainMenu(eaEnabled)
+    };
   }
 
   if (cmd === '/status' || cmd === 'cmd_status') {

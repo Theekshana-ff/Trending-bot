@@ -25,6 +25,7 @@ const { getAiProviderConfig, fetchFearAndGreed, fetchLiveCryptoHeadlines, runAiS
 const { checkTradingSession, checkLiquidationSafety, checkCorrelationGuard, checkFundingCountdownGuard, computeCoinAnalytics } = require('../lib/modules/advancedGuards');
 const { calcVWAP, checkVwapFilter, detectDivergence, evaluateOrderBookImbalance, fetchBtcDominanceContext, checkBtcDominanceFilter, detectVolatilitySqueeze, detectFlashCrash, evaluateSelfLearningCoin, checkMacroCalendarGuard, selectStrategyRegime, detectMomentumBreakout, evaluateFundingBonus, detectStopHuntReentry, evaluateBestHourBoost } = require('../lib/modules/profitEngine');
 const { evaluateBeforeTrade } = require('../lib/modules/eaTradeGate');
+const ultraPro = require('../lib/modules/ultraProEngine');
 
 const TOP_COINS = ['SOL', 'XRP', 'DOGE', 'SUI', 'ADA', 'OP', 'ARB', 'LINK', 'AVAX', 'NEAR', 'APT', 'INJ', 'RENDER', 'TRX', 'LTC', 'BNB', 'ETH', 'BTC'];
 const ALLOWED_TFS = new Set(['5m', '15m', '1h', '4h']);
@@ -194,6 +195,10 @@ async function runSixStagePipeline({
     const highSlippage = slipStats && slipStats.count >= 3 && slipStats.avgSlipPct > 0.25;
     const srCheck = regimeInfo.allowMeanReversion ? { ok: true } : checkSrProximity(cand.price, dir, structure.supportLevels, structure.resistanceLevels);
     const trapCheck = detectFalseBreakout(cPrimary, structure, dir);
+    const fvgSniper = ultraPro.detectFvgSniperZone(cPrimary, dir);
+    const liqSweepRev = ultraPro.detectLiquiditySweepReversal(cPrimary, dir);
+    const cvdCheck = ultraPro.evaluateCvdFilter(cPrimary, dir);
+    const sessionInfo = ultraPro.getCurrentSessionInfo();
     const oiCheck = checkOiFundingSqueeze({ direction: dir, fundingRate: cand.fundingRate, oiChangePct: oiData.oiChangePct });
     const fundingCountdown = checkFundingCountdownGuard({ direction: dir, fundingRate: cand.fundingRate });
     const corrCheck = checkCorrelationGuard({ symbol: cand.bybitSymbol, direction: dir, openPositions });
@@ -220,7 +225,9 @@ async function runSixStagePipeline({
       + (patternData.bias === dir ? patternData.scoreBonus : 0) + (volVol.volumeConfirmed ? 12 : 0)
       + (divergence.bias === dir ? divergence.scoreBonus : 0) + obiCheck.scoreBonus
       + (squeeze.scoreBonus || 0) + (selfLearn.scoreBonus || 0)
-      + (breakout.scoreBonus || 0) + (fundingBonus.scoreBonus || 0) + (stopHunt.scoreBonus || 0);
+      + (breakout.scoreBonus || 0) + (fundingBonus.scoreBonus || 0) + (stopHunt.scoreBonus || 0)
+      + (fvgSniper.scoreBonus || 0) + (liqSweepRev.scoreBonus || 0) + (cvdCheck.scoreBonus || 0)
+      + (sessionInfo.isOpenBreakoutHour ? sessionInfo.bonus : 0);
 
     const risk = levels.valid
       ? evaluateLiveRisk({
@@ -243,6 +250,8 @@ async function runSixStagePipeline({
     else if (!rsiCheck.ok) noTradeReason = rsiCheck.reason;
     else if (!srCheck.ok) noTradeReason = srCheck.reason;
     else if (trapCheck.isTrap) noTradeReason = trapCheck.reason;
+    else if (!cvdCheck.ok) noTradeReason = cvdCheck.reason;
+    else if (levels.valid && !ultraPro.checkFeeAndFundingNetProfitGuard({ entry: levels.entry, tp1: levels.tp1, orderType: levels.orderType, fundingRate: cand.fundingRate }).ok) noTradeReason = 'NO_TRADE: Fee & Funding Guard (TP1 reward too small vs fees).';
     else if (!vwapCheck.ok) noTradeReason = vwapCheck.reason;
     else if (!obiCheck.ok) noTradeReason = obiCheck.reason;
     else if (!btcDomCheck.ok) noTradeReason = btcDomCheck.reason;
@@ -307,7 +316,7 @@ async function runSixStagePipeline({
   return { scannedCount: candidates.length, pick: best, btcTrend };
 }
 
-async function executeLivePick(pick, sourceTag = 'MANUAL_UI') {
+async function executeLivePick(pick, sourceTag = 'MANUAL_UI', tradeMode = 'NORMAL') {
   const marginConf = await configureIsolatedAndLeverage(pick.bybitSymbol, pick.leverage);
   const side = pick.direction === 'LONG' ? 'Buy' : 'Sell';
   const isLimit = pick.orderType === 'Limit';
@@ -357,11 +366,12 @@ async function executeLivePick(pick, sourceTag = 'MANUAL_UI') {
   if (orderVerification?.verified && orderVerification.avgPrice > 0) {
     await recordSlippage(pick.bybitSymbol, pick.entry, orderVerification.avgPrice);
   }
-  await savePositionMeta(pick.bybitSymbol, { entry: pick.entry, initialSl: pick.sl, direction: pick.direction, atr: pick.atr || 0 });
+  await savePositionMeta(pick.bybitSymbol, { entry: pick.entry, initialSl: pick.sl, direction: pick.direction, atr: pick.atr || 0, tradeMode });
 
   const journalEntry = await appendJournalEntry({
     type: 'LIVE_ORDER_OPEN',
     source: sourceTag,
+    tradeMode,
     symbol: pick.bybitSymbol,
     direction: pick.direction,
     orderType: orderPayload.orderType,
@@ -476,25 +486,7 @@ module.exports = async (req, res) => {
       }
       reports.sort((a, b) => b.oosExpR - a.oosExpR);
       const summaryLines = reports.map(r => `- <b>${r.symbol}</b>: WR ${r.oosWinRate}% | Exp ${r.oosExpR}R (${r.oosTrades} trades)`).join('\n') || 'No valid samples';
-      let weeklyPerfBlock = '';
-      try {
-        const stats7d = await fetchBybitClosedPnlStats(50);
-        const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-        const wk = (stats7d.recent || []).filter(t => Number(t.updatedTime || 0) >= weekAgo);
-        if (wk.length) {
-          const net = wk.reduce((s, t) => s + Number(t.closedPnl || 0), 0);
-          const wins = wk.filter(t => Number(t.closedPnl || 0) > 0).length;
-          const wr = ((wins / wk.length) * 100).toFixed(1);
-          const byC = {};
-          wk.forEach(t => { byC[t.symbol] = (byC[t.symbol] || 0) + Number(t.closedPnl || 0); });
-          const sorted = Object.entries(byC).sort((a, b) => b[1] - a[1]);
-          weeklyPerfBlock =
-            `\n\n📅 <b>WEEKLY PERFORMANCE (7D)</b>\n` +
-            `Net PnL: <b>$${net.toFixed(2)}</b> | WR: <b>${wr}%</b> (${wins}W/${wk.length - wins}L)\n` +
-            `🏆 Best: <b>${sorted[0][0]}</b> ($${sorted[0][1].toFixed(2)}) | ⚠️ Worst: <b>${sorted[sorted.length - 1][0]}</b> ($${sorted[sorted.length - 1][1].toFixed(2)})`;
-        }
-      } catch (e) {}
-      await sendTelegramAlert(`🧠 <b>WEEKLY WALK-FORWARD OPTIMIZER (v10.0)</b>\n${summaryLines}${weeklyPerfBlock}`);
+      await sendTelegramAlert(`🧠 <b>WEEKLY WALK-FORWARD OPTIMIZER (v10.0)</b>\n${summaryLines}`);
       return res.status(200).json(makeResponse(true, { optimizer: reports }));
     }
 
@@ -509,6 +501,14 @@ module.exports = async (req, res) => {
       if (!lock.acquired) return res.status(409).json(makeResponse(false, { error: lock.reason }, { errorCode: 'CRON_LOCKED' }));
 
       try {
+        // v13.0 ULTRA PRO: Auto Market Session Open Alerts (Tokyo / London / NY / Overlap)
+        try {
+          const sessionAlert = await ultraPro.checkAndGetSessionOpenAlert();
+          if (sessionAlert && sessionAlert.text) {
+            await sendTelegramAlert(sessionAlert.text);
+          }
+        } catch (e) {}
+
         const haltedState = await getTradingHalted();
         const [acct, mkt, activeBotFilters] = await Promise.all([
           fetchBybitWalletAndPositions(),
@@ -540,6 +540,8 @@ module.exports = async (req, res) => {
             await sendTelegramAlert(`🔥 <b>PYRAMID SCALED IN (+25%)</b>\nPair: <b>${u.symbol}</b> at +${u.rMultiple}R`);
           } else if (u.action === 'DEAD_TRADE_EXITED') {
             await sendTelegramAlert(`⏱️ <b>DEAD TRADE AUTO-EXITED</b>\nPair: <b>${u.symbol}</b> (${u.rMultiple}R) to save funding fees.`);
+          } else if (u.action === 'TP_EXTENDED_BIG_RUNNER') {
+            await sendTelegramAlert(`🚀 <b>BIG RUNNER TP EXTENDED</b>\nPair: <b>${u.symbol}</b> (+${u.rMultiple}R)\nOld TP: <code>${u.oldTp}</code> → New TP: <code>${u.newTp}</code>\nADX: ${u.adx} | Vol: ${u.volRatio}x`);
           }
         }
 
@@ -586,7 +588,7 @@ module.exports = async (req, res) => {
                   autoExecResult = { vetoed: true, provider: 'EA_STRATEGY_GATE', reason: eaGate.reason };
                   await appendJournalEntry({ type: 'EA_GATE_VETO', source: 'CRON_AUTOPILOT', symbol: scanRes.pick.bybitSymbol, direction: scanRes.pick.direction, reason: eaGate.reason });
                 } else {
-                  autoExecResult = await executeLivePick(scanRes.pick, 'CRON_AUTOPILOT');
+                  autoExecResult = await executeLivePick(scanRes.pick, 'CRON_AUTOPILOT', eaGate.mode || 'NORMAL');
                   autoExecResult.aiReview = aiReview;
                   autoExecResult.eaGate = eaGate;
                 }
@@ -685,7 +687,8 @@ module.exports = async (req, res) => {
         getProfitVaultState(acct.wallet.totalEquity)
       ]);
       const coinAnalytics = computeCoinAnalytics(pnlStats.recent || []);
-      return res.status(200).json(makeResponse(true, { systemTelemetry: telemetry, dailyGuard, profitVault, fearGreed, autoWalletAlloc, botFilters, coinAnalytics, pnlStats, journal, equityCurve, ...acct }));
+      const modeComparison = ultraPro.computeModeComparison(journal, pnlStats.recent || []);
+      return res.status(200).json(makeResponse(true, { systemTelemetry: telemetry, dailyGuard, profitVault, fearGreed, autoWalletAlloc, botFilters, coinAnalytics, modeComparison, pnlStats, journal, equityCurve, ...acct }));
     }
 
     if (action === 'set_auto_wallet_alloc') {
@@ -854,7 +857,7 @@ module.exports = async (req, res) => {
           await appendJournalEntry({ type: 'EA_GATE_VETO', source: 'MANUAL_UI', symbol: scanRes.pick.bybitSymbol, direction: scanRes.pick.direction, reason: eaGate.reason });
           throw new Error(`EA_GATE_VETO: ${eaGate.reason}`);
         }
-        const exec = await executeLivePick(scanRes.pick, 'MANUAL_UI');
+        const exec = await executeLivePick(scanRes.pick, 'MANUAL_UI', eaGate.mode || 'NORMAL');
         return res.status(200).json(makeResponse(true, { systemTelemetry: telemetry, dailyGuard, aiReview, eaGate, pick: scanRes.pick, exec }));
       } catch (err) {
         return res.status(400).json(makeResponse(false, { decision: 'NO_TRADE', error: err.message }, { errorCode: 'TRADE_REJECTED' }));
