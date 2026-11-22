@@ -1,5 +1,4 @@
-// File: api/whatsapp-webhook.js (v11.1.0 WhatsApp Cloud API Control — works alongside Telegram)
-// Supported commands: /status, /stop, /resume, /close <SYMBOL>, /mode strict|balanced, /help
+// File: api/whatsapp-webhook.js (v11.1.1 — Added Debug Logging)
 const {
   getTradingHalted, setTradingHalted, appendJournalEntry,
   getBotFilters, setBotFilters
@@ -12,7 +11,10 @@ const { fetchWithTimeout } = require('../lib/modules/marketData');
 async function sendWhatsAppText(to, bodyText) {
   const token = (process.env.WHATSAPP_TOKEN || '').trim();
   const phoneId = (process.env.WHATSAPP_PHONE_ID || '').trim();
-  if (!token || !phoneId || !to) return { sent: false, reason: 'WHATSAPP_NOT_CONFIGURED' };
+  if (!token || !phoneId || !to) {
+    console.error('[WA_ERR] Missing config:', { hasToken: !!token, hasPhoneId: !!phoneId, to });
+    return { sent: false, reason: 'WHATSAPP_NOT_CONFIGURED' };
+  }
 
   try {
     const url = `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneId)}/messages`;
@@ -29,8 +31,16 @@ async function sendWhatsAppText(to, bodyText) {
         text: { body: String(bodyText || '').slice(0, 3900) }
       })
     }, 5000);
+
+    const respText = await r.text();
+    if (!r.ok) {
+      console.error('[WA_SEND_FAIL]', r.status, respText);
+    } else {
+      console.log('[WA_SEND_OK]', r.status, respText);
+    }
     return { sent: r.ok, status: r.status };
   } catch (e) {
+    console.error('[WA_SEND_EXCEPTION]', e.message);
     return { sent: false, reason: e.message };
   }
 }
@@ -60,12 +70,16 @@ module.exports = async (req, res) => {
     const msg = change?.messages?.[0];
 
     if (!msg || msg.type !== 'text' || !msg.text?.body) {
+      console.log('[WA_IGNORE] Non-text or status update');
       return res.status(200).json({ ok: true });
     }
 
     const from = String(msg.from || '').replace(/[^0-9]/g, '');
     const allowedNum = String(process.env.WHATSAPP_ALLOWED_NUMBER || '').replace(/[^0-9]/g, '');
+    console.log('[WA_INCOMING]', { from, allowedNum, text: msg.text.body });
+
     if (!allowedNum || from !== allowedNum) {
+      console.error('[WA_UNAUTHORIZED]', { from, allowedNum });
       return res.status(200).json({ ok: false, error: 'Unauthorized WhatsApp number' });
     }
 
@@ -126,6 +140,7 @@ module.exports = async (req, res) => {
 
     return res.status(200).json({ ok: true });
   } catch (err) {
+    console.error('[WA_WEBHOOK_ERR]', err.message);
     return res.status(200).json({ ok: false, error: err.message });
   }
 };
