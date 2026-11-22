@@ -1,4 +1,4 @@
-// File: api/futures-agent.js (v12.3 — Complete Trading Engine with EA Mode ON/OFF Gate)
+// File: api/futures-agent.js (v12.4 — Fixed Qty Invalid + EA Mode ON/OFF Gate)
 const {
   getTradingHalted,
   getBotFilters,
@@ -7,17 +7,15 @@ const {
 const bybitClient = require('../lib/modules/bybitLiveClient');
 const bybitEaHelpers = require('../lib/modules/bybitEaHelpers');
 const { evaluateBeforeTrade } = require('../lib/modules/eaTradeGate');
-const { runEAAnalysis } = require('../lib/modules/eaStrategyEngine');
 const {
   alertTradeOpened,
   alertMarginWarning,
   alertSystemError
 } = require('../lib/modules/telegramAlerts');
 
-const DEFAULT_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+const DEFAULT_SYMBOLS = ['SOLUSDT', 'ETHUSDT', 'BTCUSDT'];
 
 async function getSimpleNormalSignal(symbol) {
-  // Lightweight Normal Mode signal (used when EA Mode is OFF)
   const url = `https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=15&limit=30`;
   const resp = await fetch(url);
   if (!resp.ok) return { signal: 'HOLD', price: 0 };
@@ -55,7 +53,6 @@ module.exports = async (req, res) => {
     const equity = Number(acct?.wallet?.totalEquity || 0);
     const openPositions = acct?.positions || [];
 
-    // Low margin safety check
     if (equity > 0 && avail / equity < 0.15) {
       await alertMarginWarning(avail, equity);
     }
@@ -81,19 +78,17 @@ module.exports = async (req, res) => {
       let eaScore = null;
 
       if (eaMode) {
-        // EA Mode ON -> Full EA Strategy + MTF Gate controls entry
         const gate = await evaluateBeforeTrade(sym, null, 65);
         if (!gate.allow) {
           results.push({ symbol: sym, action: 'SKIPPED', mode: 'EA', reason: gate.reason });
           continue;
         }
-        chosenSide = gate.signal; // 'BUY' or 'SELL'
+        chosenSide = gate.signal;
         entryPrice = gate.ea.price;
         sl = gate.ea.suggestedSL;
         tp = gate.ea.suggestedTP;
         eaScore = gate.ea.qualityScore;
       } else {
-        // EA Mode OFF -> Normal Bot Strategy runs
         const normal = await getSimpleNormalSignal(sym);
         if (normal.signal === 'HOLD') {
           results.push({ symbol: sym, action: 'HOLD', mode: 'NORMAL' });
@@ -109,24 +104,24 @@ module.exports = async (req, res) => {
           : Number((entryPrice * 0.98).toFixed(4));
       }
 
-      // Position sizing based on available balance & riskPct
+      // Position sizing + exact Bybit qtyStep formatting
       const marginToUse = Math.max(5, avail * (riskPct / 100));
       const notional = marginToUse * leverage;
-      const qty = entryPrice > 0 ? Number((notional / entryPrice).toFixed(3)) : 0;
+      const rawQty = entryPrice > 0 ? notional / entryPrice : 0;
+      const qtyCheck = await bybitEaHelpers.formatValidBybitQty(sym, rawQty);
 
-      if (qty <= 0) {
-        results.push({ symbol: sym, action: 'SKIPPED', reason: 'Calculated qty <= 0' });
+      if (!qtyCheck.valid) {
+        results.push({ symbol: sym, action: 'SKIPPED', reason: `Invalid qty (${qtyCheck.qty})` });
         continue;
       }
 
-      // Execute trade via existing bybitClient or built-in Bybit V5 helper
       const bybitSide = chosenSide === 'BUY' ? 'Buy' : 'Sell';
       let orderRes;
       if (typeof bybitClient.openVerifiedLivePosition === 'function') {
         orderRes = await bybitClient.openVerifiedLivePosition({
           symbol: sym,
           side: bybitSide,
-          qty,
+          qty: Number(qtyCheck.qty),
           leverage,
           stopLoss: sl,
           takeProfit: tp
@@ -135,7 +130,7 @@ module.exports = async (req, res) => {
         orderRes = await bybitEaHelpers.placeMarketOrder({
           symbol: sym,
           side: bybitSide,
-          qty,
+          qty: qtyCheck.qty,
           stopLoss: sl,
           takeProfit: tp
         });
@@ -145,7 +140,7 @@ module.exports = async (req, res) => {
         type: eaMode ? 'EA_TRADE_OPENED' : 'NORMAL_TRADE_OPENED',
         symbol: sym,
         side: bybitSide,
-        qty,
+        qty: qtyCheck.qty,
         entryPrice,
         sl,
         tp,
@@ -155,7 +150,7 @@ module.exports = async (req, res) => {
       await alertTradeOpened({
         symbol: sym,
         side: bybitSide,
-        qty,
+        qty: qtyCheck.qty,
         entryPrice,
         leverage,
         sl,
@@ -163,8 +158,8 @@ module.exports = async (req, res) => {
         eaScore
       });
 
-      results.push({ symbol: sym, action: 'OPENED', mode: eaMode ? 'EA' : 'NORMAL', side: bybitSide, qty, orderRes });
-      break; // Open max 1 new trade per trigger cycle
+      results.push({ symbol: sym, action: 'OPENED', mode: eaMode ? 'EA' : 'NORMAL', side: bybitSide, qty: qtyCheck.qty, orderRes });
+      break;
     }
 
     return res.status(200).json({ ok: true, eaMode, results });
