@@ -131,6 +131,14 @@
         ? data.coinAnalytics.map(c => `<div class="bg-slate-900/80 border border-slate-800 rounded p-2"><div class="font-bold text-white">${c.symbol}</div><div class="${c.netPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${c.netPnl >= 0 ? '+' : ''}$${c.netPnl}</div><div class="text-[10px] text-slate-400">WR ${c.winRate}% (${c.wins}W/${c.losses}L)</div></div>`).join('')
         : '<span>No closed coin analytics yet.</span>';
     }
+    if (data.modeComparison) {
+      const ea = data.modeComparison.ea || { trades: 0, wins: 0, losses: 0, winRate: 0, netPnl: 0 };
+      const nm = data.modeComparison.normal || { trades: 0, wins: 0, losses: 0, winRate: 0, netPnl: 0 };
+      if ($('cmp-ea-wr')) $('cmp-ea-wr').textContent = `${ea.winRate}% WR`;
+      if ($('cmp-ea-sub')) $('cmp-ea-sub').textContent = `${ea.wins}W / ${ea.losses}L (${ea.trades} trades) · Net: ${ea.netPnl >= 0 ? '+' : ''}$${Number(ea.netPnl).toFixed(2)}`;
+      if ($('cmp-norm-wr')) $('cmp-norm-wr').textContent = `${nm.winRate}% WR`;
+      if ($('cmp-norm-sub')) $('cmp-norm-sub').textContent = `${nm.wins}W / ${nm.losses}L (${nm.trades} trades) · Net: ${nm.netPnl >= 0 ? '+' : ''}$${Number(nm.netPnl).toFixed(2)}`;
+    }
     if (data.botFilters) {
       if ($('inp-whitelist')) $('inp-whitelist').value = (data.botFilters.whitelist || []).join(',');
       if ($('inp-blacklist')) $('inp-blacklist').value = (data.botFilters.blacklist || []).join(',');
