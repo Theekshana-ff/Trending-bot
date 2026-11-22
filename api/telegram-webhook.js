@@ -1,12 +1,16 @@
-// File: api/telegram-webhook.js (v12.5 — Full 10 Updates + Start Next Trade + EA Mode ON/OFF)
+// File: api/telegram-webhook.js (v12.6 — Updates #2 Top-3 EA Scanner, #9 Chart Snapshot, #10 Weekly Report)
 const {
   getTradingHalted, setTradingHalted, appendJournalEntry,
   getBotFilters, setBotFilters
 } = require('../lib/modules/securityAndState');
 const bybitClient = require('../lib/modules/bybitLiveClient');
 const bybitEaHelpers = require('../lib/modules/bybitEaHelpers');
-const { sendTelegramAlert } = require('../lib/modules/telegramAlerts');
-const { runEAAnalysis } = require('../lib/modules/eaStrategyEngine');
+const {
+  sendTelegramAlert,
+  sendTelegramPhoto,
+  buildQuickChartUrl
+} = require('../lib/modules/telegramAlerts');
+const { runEAAnalysis, scanTopCoinsEA } = require('../lib/modules/eaStrategyEngine');
 
 function buildMainMenu(eaEnabled = false) {
   const eaLabel = eaEnabled ? '🧠 EA Mode: ON 🟢' : '⚪ EA Mode: OFF';
@@ -18,7 +22,11 @@ function buildMainMenu(eaEnabled = false) {
       ],
       [
         { text: eaLabel, callback_data: 'cmd_toggle_ea' },
-        { text: '🔍 EA Scan (BTC)', callback_data: 'cmd_ea_scan' }
+        { text: '🔎 EA Top-3 Scan', callback_data: 'cmd_ea_scan_all' }
+      ],
+      [
+        { text: '🔍 EA Chart (BTC)', callback_data: 'cmd_ea_scan' },
+        { text: '📅 Weekly Report', callback_data: 'cmd_weekly' }
       ],
       [
         { text: '📜 History', callback_data: 'cmd_history' },
@@ -62,6 +70,42 @@ async function fetchLivePrice(symbol) {
   );
 }
 
+async function buildWeeklyReportText() {
+  const history = await bybitEaHelpers.fetchClosedPnlHistory(50).catch(() => []);
+  const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const weekTrades = history.filter(t => Number(t.createdTime || 0) >= weekAgo);
+
+  if (!weekTrades.length) {
+    return `📅 *WEEKLY PERFORMANCE REPORT (7D)*\nNo closed trades recorded in the last 7 days.`;
+  }
+
+  let totalPnl = 0;
+  let wins = 0;
+  const byCoin = {};
+
+  for (const t of weekTrades) {
+    const pnl = Number(t.closedPnl || 0);
+    totalPnl += pnl;
+    if (pnl > 0) wins++;
+    byCoin[t.symbol] = (byCoin[t.symbol] || 0) + pnl;
+  }
+
+  const winRate = ((wins / weekTrades.length) * 100).toFixed(1);
+  const sortedCoins = Object.entries(byCoin).sort((a, b) => b[1] - a[1]);
+  const bestCoin = sortedCoins[0];
+  const worstCoin = sortedCoins[sortedCoins.length - 1];
+  const icon = totalPnl >= 0 ? '🟢' : '🔴';
+
+  return (
+    `📅 *WEEKLY PERFORMANCE REPORT (7D)*\n` +
+    `${icon} Net PnL: *$${totalPnl.toFixed(2)}*\n` +
+    `Trades: *${weekTrades.length}* (${wins}W / ${weekTrades.length - wins}L)\n` +
+    `Win Rate: *${winRate}%*\n` +
+    `🏆 Best Coin: *${bestCoin[0]}* ($${bestCoin[1].toFixed(2)})\n` +
+    `⚠️ Worst Coin: *${worstCoin[0]}* ($${worstCoin[1].toFixed(2)})`
+  );
+}
+
 async function handleCommand(cmd, parts, req) {
   const currentFilters = (await getBotFilters()) || {};
   let eaEnabled = Boolean(currentFilters.eaMode);
@@ -72,14 +116,13 @@ async function handleCommand(cmd, parts, req) {
         `🤖 *Bybit v6 Sniper + EA Control Panel*\n` +
         `EA Mode: *${eaEnabled ? 'ON 🟢 (EA Engine Active)' : 'OFF ⚪ (Normal v6 Sniper)'}*\n\n` +
         `පහළ buttons tap කරන්න හෝ මේ commands යවන්න:\n` +
-        `• \`/ea SOLUSDT\` — Run EA MTF Analysis\n` +
+        `• \`/eascan_all\` — Top-3 Multi-Coin EA Scanner\n` +
+        `• \`/ea SOLUSDT\` — EA MTF Analysis + Chart Image\n` +
+        `• \`/weekly\` — 7-Day Weekly Performance Report\n` +
         `• \`/ea_toggle\` — EA Mode ON / OFF\n` +
         `• \`/price BTCUSDT\` — Live Price & Funding\n` +
-        `• \`/close SOLUSDT\` — Close Position\n` +
-        `• \`/tp50 SOLUSDT\` — Partial Close 50%\n` +
-        `• \`/be SOLUSDT\` — Move SL to Breakeven\n` +
-        `• \`/risk 2\` — Set Risk % per trade\n` +
-        `• \`/lev 10\` — Set Leverage`,
+        `• \`/close SOLUSDT\` | \`/tp50 SOLUSDT\` | \`/be SOLUSDT\`\n` +
+        `• \`/risk 2\` | \`/lev 10\``,
       markup: buildMainMenu(eaEnabled)
     };
   }
@@ -96,19 +139,55 @@ async function handleCommand(cmd, parts, req) {
     };
   }
 
+  // Update #2: Multi-Coin EA Top-3 Scanner
+  if (cmd === 'cmd_ea_scan_all' || cmd === '/eascan_all') {
+    const top3 = await scanTopCoinsEA(undefined, 3);
+    if (!top3.length) {
+      return { text: `⚠️ Could not scan coins right now.`, markup: buildMainMenu(eaEnabled) };
+    }
+    const lines = top3.map((ea, idx) => {
+      const slTp = ea.suggestedSL ? ` | SL $${ea.suggestedSL} / TP $${ea.suggestedTP}` : '';
+      return (
+        `*${idx + 1}. ${ea.symbol}* — *${ea.signal}* (Score: *${ea.qualityScore}/100*)\n` +
+        `   Price: $${ea.price}${slTp}\n` +
+        `   MTF: 15M ${ea.mtf['15M']} | 1H ${ea.mtf['1H']} | 4H ${ea.mtf['4H']}`
+      );
+    }).join('\n\n');
+
+    return {
+      text: `🔎 *TOP-3 MULTI-COIN EA SCANNER*\n\n${lines}\n\n_Chart බලන්න \`/ea COINUSDT\` යවන්න._`,
+      markup: buildMainMenu(eaEnabled)
+    };
+  }
+
+  // Update #9: EA Analysis + Chart Snapshot Image
   if (cmd === 'cmd_ea_scan' || (cmd === '/ea' && parts[1])) {
     const sym = (parts[1] || 'BTCUSDT').toUpperCase();
     const ea = await runEAAnalysis(sym);
     const slTpLine = ea.suggestedSL ? `\nSL: *$${ea.suggestedSL}* | TP: *$${ea.suggestedTP}*` : '';
-    return {
-      text:
-        `🧠 *EA ANALYSIS: ${ea.symbol}*\n` +
-        `Price: *$${ea.price}*\n` +
-        `Signal: *${ea.signal}* | Quality Score: *${ea.qualityScore}/100*${slTpLine}\n` +
-        `MTF: 5M *${ea.mtf['5M']}* | 15M *${ea.mtf['15M']}* | 1H *${ea.mtf['1H']}* | 4H *${ea.mtf['4H']}*\n` +
-        `Reasons:\n• ${ea.reasons.join('\n• ')}`,
-      markup: buildMainMenu(eaEnabled)
-    };
+    const caption =
+      `🧠 *EA ANALYSIS: ${ea.symbol}*\n` +
+      `Price: *$${ea.price}*\n` +
+      `Signal: *${ea.signal}* | Quality Score: *${ea.qualityScore}/100*${slTpLine}\n` +
+      `MTF: 5M *${ea.mtf['5M']}* | 15M *${ea.mtf['15M']}* | 1H *${ea.mtf['1H']}* | 4H *${ea.mtf['4H']}*\n` +
+      `Reasons: ${ea.reasons.join(', ')}`;
+
+    const photoUrl = buildQuickChartUrl({
+      symbol: ea.symbol,
+      closes: ea.recentCloses,
+      entry: ea.price,
+      sl: ea.suggestedSL,
+      tp: ea.suggestedTP,
+      signal: ea.signal
+    });
+
+    return { text: caption, photoUrl, markup: buildMainMenu(eaEnabled) };
+  }
+
+  // Update #10: Weekly Performance Report
+  if (cmd === 'cmd_weekly' || cmd === '/weekly') {
+    const reportText = await buildWeeklyReportText();
+    return { text: reportText, markup: buildMainMenu(eaEnabled) };
   }
 
   if (cmd === '/status' || cmd === 'cmd_status') {
@@ -303,7 +382,11 @@ module.exports = async (req, res) => {
     }
 
     const reply = await handleCommand(cmd, parts, req);
-    await sendTelegramAlert(reply.text, reply.markup || null);
+    if (reply.photoUrl) {
+      await sendTelegramPhoto(reply.photoUrl, reply.text, reply.markup || null);
+    } else {
+      await sendTelegramAlert(reply.text, reply.markup || null);
+    }
     return res.status(200).send('OK');
   } catch (err) {
     console.error('[TG_WEBHOOK_ERR]', err.message);

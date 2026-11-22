@@ -476,7 +476,25 @@ module.exports = async (req, res) => {
       }
       reports.sort((a, b) => b.oosExpR - a.oosExpR);
       const summaryLines = reports.map(r => `- <b>${r.symbol}</b>: WR ${r.oosWinRate}% | Exp ${r.oosExpR}R (${r.oosTrades} trades)`).join('\n') || 'No valid samples';
-      await sendTelegramAlert(`🧠 <b>WEEKLY WALK-FORWARD OPTIMIZER (v10.0)</b>\n${summaryLines}`);
+      let weeklyPerfBlock = '';
+      try {
+        const stats7d = await fetchBybitClosedPnlStats(50);
+        const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        const wk = (stats7d.recent || []).filter(t => Number(t.updatedTime || 0) >= weekAgo);
+        if (wk.length) {
+          const net = wk.reduce((s, t) => s + Number(t.closedPnl || 0), 0);
+          const wins = wk.filter(t => Number(t.closedPnl || 0) > 0).length;
+          const wr = ((wins / wk.length) * 100).toFixed(1);
+          const byC = {};
+          wk.forEach(t => { byC[t.symbol] = (byC[t.symbol] || 0) + Number(t.closedPnl || 0); });
+          const sorted = Object.entries(byC).sort((a, b) => b[1] - a[1]);
+          weeklyPerfBlock =
+            `\n\n📅 <b>WEEKLY PERFORMANCE (7D)</b>\n` +
+            `Net PnL: <b>$${net.toFixed(2)}</b> | WR: <b>${wr}%</b> (${wins}W/${wk.length - wins}L)\n` +
+            `🏆 Best: <b>${sorted[0][0]}</b> ($${sorted[0][1].toFixed(2)}) | ⚠️ Worst: <b>${sorted[sorted.length - 1][0]}</b> ($${sorted[sorted.length - 1][1].toFixed(2)})`;
+        }
+      } catch (e) {}
+      await sendTelegramAlert(`🧠 <b>WEEKLY WALK-FORWARD OPTIMIZER (v10.0)</b>\n${summaryLines}${weeklyPerfBlock}`);
       return res.status(200).json(makeResponse(true, { optimizer: reports }));
     }
 
