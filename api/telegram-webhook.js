@@ -1,31 +1,40 @@
-// File: api/telegram-webhook.js (v12.0 — Full 10 Updates + Start Next Trade Button)
+// File: api/telegram-webhook.js (v12.3 — Full 10 Updates + Start Next Trade + EA Mode ON/OFF)
 const {
   getTradingHalted, setTradingHalted, appendJournalEntry,
   getBotFilters, setBotFilters
 } = require('../lib/modules/securityAndState');
 const bybitClient = require('../lib/modules/bybitLiveClient');
+const bybitEaHelpers = require('../lib/modules/bybitEaHelpers');
 const { sendTelegramAlert } = require('../lib/modules/telegramAlerts');
+const { runEAAnalysis } = require('../lib/modules/eaStrategyEngine');
 
-const MAIN_MENU = {
-  inline_keyboard: [
-    [
-      { text: '📊 Status', callback_data: 'cmd_status' },
-      { text: '▶️ Start Next Trade', callback_data: 'cmd_next_trade' }
-    ],
-    [
-      { text: '📜 History', callback_data: 'cmd_history' },
-      { text: '📈 Daily PnL', callback_data: 'cmd_pnl' }
-    ],
-    [
-      { text: '⚙️ Strict Mode', callback_data: 'cmd_mode_strict' },
-      { text: '⚖️ Balanced Mode', callback_data: 'cmd_mode_balanced' }
-    ],
-    [
-      { text: '✅ Resume', callback_data: 'cmd_resume' },
-      { text: '🚨 Emergency Stop', callback_data: 'cmd_stop' }
+function buildMainMenu(eaEnabled = false) {
+  const eaLabel = eaEnabled ? '🧠 EA Mode: ON 🟢' : '⚪ EA Mode: OFF';
+  return {
+    inline_keyboard: [
+      [
+        { text: '📊 Status', callback_data: 'cmd_status' },
+        { text: '▶️ Start Next Trade', callback_data: 'cmd_next_trade' }
+      ],
+      [
+        { text: eaLabel, callback_data: 'cmd_toggle_ea' },
+        { text: '🔍 EA Scan (BTC)', callback_data: 'cmd_ea_scan' }
+      ],
+      [
+        { text: '📜 History', callback_data: 'cmd_history' },
+        { text: '📈 Daily PnL', callback_data: 'cmd_pnl' }
+      ],
+      [
+        { text: '⚙️ Strict Mode', callback_data: 'cmd_mode_strict' },
+        { text: '⚖️ Balanced Mode', callback_data: 'cmd_mode_balanced' }
+      ],
+      [
+        { text: '✅ Resume', callback_data: 'cmd_resume' },
+        { text: '🚨 Emergency Stop', callback_data: 'cmd_stop' }
+      ]
     ]
-  ]
-};
+  };
+}
 
 async function answerCallback(callbackQueryId) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -54,26 +63,60 @@ async function fetchLivePrice(symbol) {
 }
 
 async function handleCommand(cmd, parts, req) {
+  const currentFilters = (await getBotFilters()) || {};
+  let eaEnabled = Boolean(currentFilters.eaMode);
+
   if (cmd === '/start' || cmd === '/menu' || cmd === '/help') {
     return {
       text:
-        `🤖 *Bybit Trading Bot Control Panel*\n\n` +
+        `🤖 *Bybit Trading Bot Control Panel (v12.3)*\n` +
+        `EA Mode: *${eaEnabled ? 'ON 🟢 (EA Engine Active)' : 'OFF ⚪ (Normal Bot Run)'}*\n\n` +
         `පහළ buttons tap කරන්න හෝ මේ commands යවන්න:\n` +
+        `• \`/ea SOLUSDT\` — Run EA MTF Analysis\n` +
+        `• \`/ea_toggle\` — EA Mode ON / OFF\n` +
         `• \`/price BTCUSDT\` — Live Price & Funding\n` +
         `• \`/close SOLUSDT\` — Close Position\n` +
         `• \`/tp50 SOLUSDT\` — Partial Close 50%\n` +
         `• \`/be SOLUSDT\` — Move SL to Breakeven\n` +
         `• \`/risk 2\` — Set Risk % per trade\n` +
         `• \`/lev 10\` — Set Leverage`,
-      markup: MAIN_MENU
+      markup: buildMainMenu(eaEnabled)
+    };
+  }
+
+  if (cmd === 'cmd_toggle_ea' || cmd === '/ea_toggle') {
+    eaEnabled = !eaEnabled;
+    await setBotFilters({ ...currentFilters, eaMode: eaEnabled });
+    await appendJournalEntry({ type: 'TG_EA_MODE_TOGGLE', eaMode: eaEnabled });
+    return {
+      text: eaEnabled
+        ? `🧠 *EA STRATEGY MODE: ON 🟢*\nදැන් bot එකේ trades ඔක්කොම EA Multi-Strategy + MTF (5M/15M/1H/4H) engine එක හරහා filter වෙලා run වෙනවා.`
+        : `⚪ *EA STRATEGY MODE: OFF*\nEA Mode off කළා. දැන් bot එක සාමාන්‍ය (Normal) විදියට run වෙනවා.`,
+      markup: buildMainMenu(eaEnabled)
+    };
+  }
+
+  if (cmd === 'cmd_ea_scan' || (cmd === '/ea' && parts[1])) {
+    const sym = (parts[1] || 'BTCUSDT').toUpperCase();
+    const ea = await runEAAnalysis(sym);
+    const slTpLine = ea.suggestedSL
+      ? `\nSL: *$${ea.suggestedSL}* | TP: *$${ea.suggestedTP}*`
+      : '';
+    return {
+      text:
+        `🧠 *EA ANALYSIS: ${ea.symbol}*\n` +
+        `Price: *$${ea.price}*\n` +
+        `Signal: *${ea.signal}* | Quality Score: *${ea.qualityScore}/100*${slTpLine}\n` +
+        `MTF: 5M *${ea.mtf['5M']}* | 15M *${ea.mtf['15M']}* | 1H *${ea.mtf['1H']}* | 4H *${ea.mtf['4H']}*\n` +
+        `Reasons:\n• ${ea.reasons.join('\n• ')}`,
+      markup: buildMainMenu(eaEnabled)
     };
   }
 
   if (cmd === '/status' || cmd === 'cmd_status') {
-    const [acct, halted, filters] = await Promise.all([
+    const [acct, halted] = await Promise.all([
       bybitClient.fetchBybitWalletAndPositions(),
-      getTradingHalted(),
-      getBotFilters()
+      getTradingHalted()
     ]);
     const posLines = (acct.positions || [])
       .map(p => `• *${p.symbol}* ${p.side} (${p.leverage}x) | uPnL: *$${Number(p.unrealisedPnl).toFixed(2)}*`)
@@ -82,11 +125,12 @@ async function handleCommand(cmd, parts, req) {
       text:
         `📊 *BYBIT BOT STATUS*\n` +
         `Halted: *${halted.halted ? 'YES' : 'NO'}*\n` +
-        `Mode: *${String(filters?.strategyMode || 'strict').toUpperCase()}*\n` +
-        `Risk: *${filters?.riskPct || 'Default'}%* | Lev: *${filters?.leverage || 'Default'}x*\n` +
+        `EA Mode: *${eaEnabled ? 'ON 🟢' : 'OFF ⚪ (Normal)'}*\n` +
+        `Mode: *${String(currentFilters.strategyMode || 'strict').toUpperCase()}*\n` +
+        `Risk: *${currentFilters.riskPct || 'Default'}%* | Lev: *${currentFilters.leverage || 'Default'}x*\n` +
         `Avail: *$${acct.wallet.availableBalance.toFixed(2)}* | Equity: *$${acct.wallet.totalEquity.toFixed(2)}*\n\n` +
         `*Open Positions:*\n${posLines}`,
-      markup: MAIN_MENU
+      markup: buildMainMenu(eaEnabled)
     };
   }
 
@@ -98,16 +142,16 @@ async function handleCommand(cmd, parts, req) {
       try {
         const resp = await fetch(`https://${host}/api/futures-agent`, { method: 'POST' });
         triggerNote = resp.ok
-          ? 'Futures Agent triggered immediately!'
+          ? `Futures Agent triggered (${eaEnabled ? 'EA Mode ON' : 'Normal Mode'})!`
           : `Agent responded with status ${resp.status}.`;
       } catch (e) {
         triggerNote = `Trigger sent (${e.message})`;
       }
     }
-    await appendJournalEntry({ type: 'TG_START_NEXT_TRADE', note: triggerNote });
+    await appendJournalEntry({ type: 'TG_START_NEXT_TRADE', eaMode: eaEnabled, note: triggerNote });
     return {
       text: `▶️ *START NEXT TRADE*\nTrading is active. ${triggerNote}`,
-      markup: MAIN_MENU
+      markup: buildMainMenu(eaEnabled)
     };
   }
 
@@ -117,47 +161,44 @@ async function handleCommand(cmd, parts, req) {
     await appendJournalEntry({ type: 'TG_EMERGENCY_STOP', ...stopRes });
     return {
       text: `🚨 *EMERGENCY STOP*\nClosed ${stopRes.closedCount} positions. Trading HALTED.`,
-      markup: MAIN_MENU
+      markup: buildMainMenu(eaEnabled)
     };
   }
 
   if (cmd === '/resume' || cmd === 'cmd_resume') {
     await setTradingHalted(false);
     await appendJournalEntry({ type: 'TG_RESUME_TRADING' });
-    return { text: `✅ *TRADING RESUMED* via Telegram.`, markup: MAIN_MENU };
+    return { text: `✅ *TRADING RESUMED* via Telegram.`, markup: buildMainMenu(eaEnabled) };
   }
 
   if (cmd === 'cmd_mode_strict' || cmd === 'cmd_mode_balanced' || (cmd === '/mode' && parts[1])) {
     const targetMode = (cmd === 'cmd_mode_balanced' || parts[1]?.toLowerCase() === 'balanced')
       ? 'balanced'
       : 'strict';
-    const cur = await getBotFilters();
-    await setBotFilters({ ...cur, strategyMode: targetMode });
-    return { text: `⚙️ Strategy Mode switched to *${targetMode.toUpperCase()}*.`, markup: MAIN_MENU };
+    await setBotFilters({ ...currentFilters, strategyMode: targetMode });
+    return { text: `⚙️ Strategy Mode switched to *${targetMode.toUpperCase()}*.`, markup: buildMainMenu(eaEnabled) };
   }
 
   if (cmd === '/price' && parts[1]) {
-    return { text: await fetchLivePrice(parts[1]), markup: MAIN_MENU };
+    return { text: await fetchLivePrice(parts[1]), markup: buildMainMenu(eaEnabled) };
   }
 
   if (cmd === '/risk' && parts[1]) {
     const riskPct = Number(parts[1]);
     if (isNaN(riskPct) || riskPct <= 0 || riskPct > 20) {
-      return { text: `⚠️ Valid risk % එකක් දෙන්න (උදා: \`/risk 2\`)` };
+      return { text: `⚠️ Valid risk % එකක් දෙන්න (උදා: \`/risk 2\`)`, markup: buildMainMenu(eaEnabled) };
     }
-    const cur = await getBotFilters();
-    await setBotFilters({ ...cur, riskPct });
-    return { text: `🎯 Risk per trade updated to *${riskPct}%*.`, markup: MAIN_MENU };
+    await setBotFilters({ ...currentFilters, riskPct });
+    return { text: `🎯 Risk per trade updated to *${riskPct}%*.`, markup: buildMainMenu(eaEnabled) };
   }
 
   if (cmd === '/lev' && parts[1]) {
     const leverage = Number(parts[1]);
     if (isNaN(leverage) || leverage < 1 || leverage > 50) {
-      return { text: `⚠️ Valid leverage එකක් දෙන්න (උදා: \`/lev 10\`)` };
+      return { text: `⚠️ Valid leverage එකක් දෙන්න (උදා: \`/lev 10\`)`, markup: buildMainMenu(eaEnabled) };
     }
-    const cur = await getBotFilters();
-    await setBotFilters({ ...cur, leverage });
-    return { text: `⚡ Leverage updated to *${leverage}x*.`, markup: MAIN_MENU };
+    await setBotFilters({ ...currentFilters, leverage });
+    return { text: `⚡ Leverage updated to *${leverage}x*.`, markup: buildMainMenu(eaEnabled) };
   }
 
   if (cmd === '/close' && parts[1]) {
@@ -166,49 +207,75 @@ async function handleCommand(cmd, parts, req) {
       text: closeRes.closed
         ? `🔒 *CLOSED ${closeRes.symbol}* | Qty: ${closeRes.qty}`
         : `⚠️ Could not close ${parts[1]}: ${closeRes.reason}`,
-      markup: MAIN_MENU
+      markup: buildMainMenu(eaEnabled)
     };
   }
 
   if (cmd === '/tp50' && parts[1]) {
-    if (typeof bybitClient.closePartialPosition === 'function') {
-      const res50 = await bybitClient.closePartialPosition(parts[1].toUpperCase(), 0.5);
-      return { text: `✂️ *50% Partial Close (${parts[1].toUpperCase()}):* ${res50.message || 'Done'}`, markup: MAIN_MENU };
-    }
-    return { text: `ℹ️ \`/tp50\` වැඩ කරන්න \`bybitLiveClient.js\` එකට \`closePartialPosition\` function එක එකතු කරන්න ඕනේ.`, markup: MAIN_MENU };
-  }
-
-  if (cmd === '/be' && parts[1]) {
-    if (typeof bybitClient.moveStopLossToBreakeven === 'function') {
-      const resBe = await bybitClient.moveStopLossToBreakeven(parts[1].toUpperCase());
-      return { text: `🛡️ *Breakeven SL (${parts[1].toUpperCase()}):* ${resBe.message || 'Done'}`, markup: MAIN_MENU };
-    }
-    return { text: `ℹ️ \`/be\` වැඩ කරන්න \`bybitLiveClient.js\` එකට \`moveStopLossToBreakeven\` function එක එකතු කරන්න ඕනේ.`, markup: MAIN_MENU };
-  }
-
-  if (cmd === '/history' || cmd === 'cmd_history') {
-    if (typeof bybitClient.fetchClosedPnlHistory === 'function') {
-      const list = await bybitClient.fetchClosedPnlHistory(5);
-      const lines = list.map(t => `• ${t.symbol} (${t.side}): *$${Number(t.closedPnl).toFixed(2)}*`).join('\n') || 'No recent trades.';
-      return { text: `📜 *LAST 5 CLOSED TRADES*\n${lines}`, markup: MAIN_MENU };
-    }
-    return { text: `📜 Recent trade history බලන්න \`bybitLiveClient.js\` එකට \`fetchClosedPnlHistory\` එකතු කරන්න ඕනේ.`, markup: MAIN_MENU };
-  }
-
-  if (cmd === '/pnl' || cmd === 'cmd_pnl') {
-    const acct = await bybitClient.fetchBybitWalletAndPositions();
-    const uPnl = (acct.positions || []).reduce((sum, p) => sum + Number(p.unrealisedPnl || 0), 0);
+    const fn = typeof bybitClient.closePartialPosition === 'function'
+      ? bybitClient.closePartialPosition
+      : bybitEaHelpers.closePartialPosition;
+    const res50 = await fn(parts[1].toUpperCase(), 0.5);
     return {
-      text:
-        `📈 *CURRENT PnL SUMMARY*\n` +
-        `Total Equity: *$${acct.wallet.totalEquity.toFixed(2)}*\n` +
-        `Unrealized PnL: *$${uPnl.toFixed(2)}*\n` +
-        `Open Positions: *${(acct.positions || []).length}*`,
-      markup: MAIN_MENU
+      text: res50.ok
+        ? `✂️ *50% Partial Close (${parts[1].toUpperCase()}):* ${res50.message}`
+        : `⚠️ ${res50.message}`,
+      markup: buildMainMenu(eaEnabled)
     };
   }
 
-  return { text: `❓ Unknown command. Type \`/menu\` to see all options.`, markup: MAIN_MENU };
+  if (cmd === '/be' && parts[1]) {
+    const fn = typeof bybitClient.moveStopLossToBreakeven === 'function'
+      ? bybitClient.moveStopLossToBreakeven
+      : bybitEaHelpers.moveStopLossToBreakeven;
+    const resBe = await fn(parts[1].toUpperCase());
+    return {
+      text: resBe.ok
+        ? `🛡️ *Breakeven SL (${parts[1].toUpperCase()}):* ${resBe.message}`
+        : `⚠️ ${resBe.message}`,
+      markup: buildMainMenu(eaEnabled)
+    };
+  }
+
+  if (cmd === '/history' || cmd === 'cmd_history') {
+    const fn = typeof bybitClient.fetchClosedPnlHistory === 'function'
+      ? bybitClient.fetchClosedPnlHistory
+      : bybitEaHelpers.fetchClosedPnlHistory;
+    const list = await fn(5);
+    const lines = list
+      .map(t => {
+        const icon = Number(t.closedPnl) >= 0 ? '✅' : '🔻';
+        return `${icon} *${t.symbol}* (${t.side}): *$${Number(t.closedPnl).toFixed(2)}*`;
+      })
+      .join('\n') || 'No recent closed trades.';
+    return { text: `📜 *LAST 5 CLOSED TRADES*\n${lines}`, markup: buildMainMenu(eaEnabled) };
+  }
+
+  if (cmd === '/pnl' || cmd === 'cmd_pnl') {
+    const [acct, history] = await Promise.all([
+      bybitClient.fetchBybitWalletAndPositions(),
+      bybitEaHelpers.fetchClosedPnlHistory(20).catch(() => [])
+    ]);
+    const uPnl = (acct.positions || []).reduce((sum, p) => sum + Number(p.unrealisedPnl || 0), 0);
+    const startOfDay = new Date();
+    startOfDay.setUTCHours(0, 0, 0, 0);
+    const todayTrades = history.filter(t => Number(t.createdTime || 0) >= startOfDay.getTime());
+    const realizedToday = todayTrades.reduce((sum, t) => sum + Number(t.closedPnl || 0), 0);
+    const wins = todayTrades.filter(t => Number(t.closedPnl) > 0).length;
+    const winRate = todayTrades.length ? ((wins / todayTrades.length) * 100).toFixed(1) : '0.0';
+
+    return {
+      text:
+        `📈 *DAILY PnL SUMMARY*\n` +
+        `Total Equity: *$${acct.wallet.totalEquity.toFixed(2)}*\n` +
+        `Unrealized PnL: *$${uPnl.toFixed(2)}*\n` +
+        `Today Realized PnL: *$${realizedToday.toFixed(2)}*\n` +
+        `Today Trades: *${todayTrades.length}* (Win Rate: *${winRate}%*)`,
+      markup: buildMainMenu(eaEnabled)
+    };
+  }
+
+  return { text: `❓ Unknown command. Type \`/menu\` to see all options.`, markup: buildMainMenu(eaEnabled) };
 }
 
 module.exports = async (req, res) => {
