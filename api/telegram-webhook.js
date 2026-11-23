@@ -12,6 +12,7 @@ const {
 } = require('../lib/modules/telegramAlerts');
 const { runEAAnalysis, scanTopCoinsEA } = require('../lib/modules/eaStrategyEngine');
 const ultraPro = require('../lib/modules/ultraProEngine');
+const { safeCompareSecret } = require('../lib/modules/securityAndState');
 
 function buildMainMenu(eaEnabled = false) {
   const eaLabel = eaEnabled ? '🧠 EA Mode: ON 🟢' : '⚪ EA Mode: OFF';
@@ -63,7 +64,8 @@ async function answerCallback(callbackQueryId) {
 }
 
 async function fetchLivePrice(symbol) {
-  const cleanSym = symbol.toUpperCase();
+  const cleanSym = String(symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 20);
+  if (!cleanSym) return '⚠️ Invalid symbol';
   const r = await fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${cleanSym}`);
   const data = await r.json();
   const item = data?.result?.list?.[0];
@@ -411,6 +413,19 @@ No extreme funding rate squeezes right now.`, markup: buildMainMenu(eaEnabled) }
 module.exports = async (req, res) => {
   try {
     if (req.method !== 'POST') return res.status(200).send('OK');
+    // Update 26: Telegram signs real webhook calls with X-Telegram-Bot-Api-Secret-Token.
+    // Without this check anyone who knows the chat id could forge /stop, /resume or /nexttrade.
+    const expectedHook = String(process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
+    const providedHook = String(req.headers?.['x-telegram-bot-api-secret-token'] || '').trim();
+    if (!expectedHook) {
+      if (String(process.env.TELEGRAM_WEBHOOK_INSECURE_OK || '').toLowerCase() !== 'true') {
+        console.error('[TG_WEBHOOK_BLOCKED] TELEGRAM_WEBHOOK_SECRET is not set (fail-closed).');
+        return res.status(200).send('OK');
+      }
+    } else if (!safeCompareSecret(providedHook, expectedHook)) {
+      console.error('[TG_WEBHOOK_BAD_SECRET]');
+      return res.status(200).send('OK');
+    }
     const update = req.body || {};
     const allowedChatId = String(process.env.TELEGRAM_CHAT_ID || '');
 

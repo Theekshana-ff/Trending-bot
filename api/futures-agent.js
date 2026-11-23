@@ -7,11 +7,11 @@
 const { getBybitMarketData, fetchKlines, fetchOpenInterest, fetchOrderBookImbalance } = require('../lib/modules/marketData');
 const { analyzeVolumeVolatility, evaluateMTF, detectTrend, checkRsiGuard } = require('../lib/modules/indicators');
 const { analyzeMarketStructure, checkSrProximity, detectChartPatterns, detectFalseBreakout, analyzeLiquidityAndSMC, analyzeFibonacci, analyzeElliottWave } = require('../lib/modules/structureSmc');
-const { computeAndValidateEntry, evaluateLiveRisk, checkOiFundingSqueeze, formatBybitPrice, formatBybitQty } = require('../lib/modules/riskAndValidation');
+const { computeAndValidateEntry, evaluateLiveRisk, healthyMoveScore, checkOiFundingSqueeze, formatBybitPrice, formatBybitQty } = require('../lib/modules/riskAndValidation');
 const { buildDeterministicExplanation, runWalkForward } = require('../lib/modules/aiBrainAndBacktest');
 const {
   safeCompareSecret, makeResponse, acquireLock, releaseLock,
-  validateRequestNonce, checkRateLimit, getTradingHalted, setTradingHalted,
+  validateRequestNonce, checkRateLimit, isAuthBlocked, recordAuthFailure, getTradingHalted, setTradingHalted,
   appendJournalEntry, getJournalEntries, getSystemHealth,
   recordEquitySnapshot, getEquityHistory, checkDailyGuard, requireVerifiedRedis, savePositionMeta, sanitizeErrorForClient, getAutoWalletAlloc, setAutoWalletAlloc, getBotFilters, setBotFilters, shouldSendDailyReport, markDailyReportSent, tripCircuitBreaker, getCircuitBreaker, recordSlippage, getSlippageStats, hasLossPostMortemSent, markLossPostMortemSent, getProfitVaultState
 } = require('../lib/modules/securityAndState');
@@ -43,14 +43,7 @@ function isAutoExecuteEnabled() {
 }
 
 
-// FIX #1 helpers: avoid chasing coins that already moved too far in 24h
 const MAX_CHASE_24H_PCT = Number(process.env.MAX_CHASE_24H_PCT || 10);
-function healthyMoveScore(c) {
-  const mv = Math.abs(Number(c.chgPct) || 0);
-  // best zone: 1%-6% move (trend started, not exhausted); penalise tiny and large moves
-  const moveFit = mv < 1 ? mv : (mv <= 6 ? 1 + (mv - 1) * 0.2 : Math.max(0.2, 2 - (mv - 6) * 0.4));
-  return moveFit * Math.log10(Math.max(10, Number(c.turnover) || 10));
-}
 
 // v6 Update #3: BTC Trend Filter (15m + 1h) for Altcoin Fakeout Prevention
 async function getBtcTrendContext() {
@@ -364,6 +357,7 @@ async function executeLivePick(pick, sourceTag = 'MANUAL_UI', tradeMode = 'NORMA
 
   const orderRes = await bybitV5Req('POST', '/v5/order/create', orderPayload);
   let splitOrder2Id = null;
+  let splitOrder2Error = null;
   if (canSplitLimit) {
     try {
       const ord2 = await bybitV5Req('POST', '/v5/order/create', {
@@ -379,7 +373,9 @@ async function executeLivePick(pick, sourceTag = 'MANUAL_UI', tradeMode = 'NORMA
         positionIdx: 0
       });
       splitOrder2Id = ord2?.orderId || null;
-    } catch (e) {}
+    } catch (e) {
+      splitOrder2Error = e.message;
+    }
   }
   const orderVerification = await verifyOrderStatus(pick.bybitSymbol, orderRes?.orderId);
   if (orderVerification?.verified && orderVerification.avgPrice > 0) {
@@ -414,10 +410,13 @@ async function executeLivePick(pick, sourceTag = 'MANUAL_UI', tradeMode = 'NORMA
     `Entry: <code>${pick.entry}</code>${splitOrder2Id ? ` + Split2: <code>${pick.entry2}</code>` : ''} | SL: <code>${pick.sl}</code> | TP1: <code>${pick.tp1}</code>\n` +
     `Qty: ${pick.orderQty} | Lev: ${marginConf.leverage}x ${marginConf.marginModeLabel} | Margin: $${pick.requiredMargin}\n` +
     `Score: ${pick.signalQualityScore}/100 | ADX: ${pick.adx} | Pattern: ${pick.pattern}`
+    + (splitOrder2Error ? `\n⚠️ Split2 order FAILED: ${splitOrder2Error}` : '')
   );
 
   return {
     orderId: orderRes?.orderId || null,
+    splitOrder2Id,
+    splitOrder2Error,
     orderVerification,
     marginConf,
     journalEntry,
@@ -437,6 +436,9 @@ module.exports = async (req, res) => {
     }
 
     const clientIp = String(req.headers?.['x-vercel-forwarded-for'] || req.socket?.remoteAddress || 'local').split(',')[0].trim();
+    if (isAuthBlocked(clientIp)) {
+      return res.status(429).json(makeResponse(false, { error: 'Too many failed authentication attempts. Try again in 10 minutes.' }, { errorCode: 'AUTH_BLOCKED' }));
+    }
     if (!checkRateLimit(clientIp, 90)) {
       return res.status(429).json(makeResponse(false, { error: 'Rate limit exceeded.' }, { errorCode: 'RATE_LIMITED' }));
     }
@@ -485,6 +487,7 @@ module.exports = async (req, res) => {
       const expectedCron = (process.env.CRON_SECRET || '').trim();
       const providedCron = String(req.headers?.['x-cron-secret'] || req.headers?.authorization?.replace(/^Bearer\s+/i, '') || '').trim();
       if (!expectedCron || !safeCompareSecret(providedCron, expectedCron)) {
+        recordAuthFailure(clientIp);
         return res.status(401).json(makeResponse(false, { error: 'Unauthorized: Valid CRON_SECRET required.' }, { errorCode: 'CRON_UNAUTHORIZED' }));
       }
       const coins = ['BTC', 'ETH', 'SOL', 'XRP', 'SUI'];
@@ -514,6 +517,7 @@ module.exports = async (req, res) => {
       const expectedCron = (process.env.CRON_SECRET || '').trim();
       const providedCron = String(req.headers?.['x-cron-secret'] || req.headers?.authorization?.replace(/^Bearer\s+/i, '') || '').trim();
       if (!expectedCron || !safeCompareSecret(providedCron, expectedCron)) {
+        recordAuthFailure(clientIp);
         return res.status(401).json(makeResponse(false, { error: 'Unauthorized: Valid CRON_SECRET required.' }, { errorCode: 'CRON_UNAUTHORIZED' }));
       }
       const lock = await acquireLock('bybit_cron_guardian_lock', 35000);
@@ -540,7 +544,7 @@ module.exports = async (req, res) => {
         const [trailingUpdates, chasedOrders, cancelledStale, slReconciled] = await Promise.all([
           applyTrailingAndBreakeven(acct.positions, mkt.instMap || {}, { pyramidingEnabled: Boolean(activeBotFilters?.pyramidingEnabled) }),
           chaseOpenLimitOrders(acct.openOrders || [], mkt.tickers || {}, mkt.instMap || {}),
-          cancelStaleLimitOrders(acct.openOrders || [], 45),
+          cancelStaleLimitOrders(acct.openOrders || [], Number(process.env.LIMIT_MAX_AGE_MIN || 30)),
           reconcileUnprotectedPositions(acct.positions, mkt.instMap || {})
         ]);
         for (const ch of chasedOrders) {
@@ -671,7 +675,7 @@ module.exports = async (req, res) => {
     const expectedSecret = (process.env.AGENT_SECRET || '').trim();
     const providedSecret = String(req.headers?.['x-agent-secret'] || '').trim();
     if (!expectedSecret) return res.status(503).json(makeResponse(false, { error: 'Server misconfigured: AGENT_SECRET not set.' }, { errorCode: 'ENV_MISSING_SECRET' }));
-    if (!safeCompareSecret(providedSecret, expectedSecret)) return res.status(401).json(makeResponse(false, { error: 'Unauthorized: Valid AGENT_SECRET required.' }, { errorCode: 'UNAUTHORIZED' }));
+    if (!safeCompareSecret(providedSecret, expectedSecret)) { recordAuthFailure(clientIp); return res.status(401).json(makeResponse(false, { error: 'Unauthorized: Valid AGENT_SECRET required.' }, { errorCode: 'UNAUTHORIZED' })); }
 
     if (['scan_and_trade', 'live_close', 'emergency_stop', 'resume_trading'].includes(action)) {
       const nonceCheck = await validateRequestNonce(req.headers?.['x-request-nonce'], req.headers?.['x-request-ts'], true);
