@@ -97,3 +97,23 @@ curl "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
   -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
 ```
 Without `TELEGRAM_WEBHOOK_SECRET` the webhook is fail-closed (ignores every command).
+
+---
+
+## v14.1: Standalone SV Mode & EA Mode (Vercel Environment Variables)
+
+**Vercel Dashboard → Project → Settings → Environment Variables** වෙත ගොස් පහත keys අවශ්‍ය පරිදි add කර **Redeploy** කරන්න:
+
+| Variable Name | Value / Default | විස්තරය |
+| :--- | :--- | :--- |
+| `SV_MODE` | `true` / `false` | Standalone SV Micro-Scalping Engine ON/OFF (ON වුණාම Normal v6, EA Mode & Groq AI bypass වී SV Engine පමණක් run වේ. මෙය set කර නැත්නම් Telegram `⚡ SV Mode` button එකෙන් toggle කළ හැක) |
+| `EA_MODE` | `true` / `false` | EA Strategy Gate ON/OFF (`SV_MODE` OFF වෙලාවට පමණක් ක්‍රියාත්මක වේ. Set කර නැත්නම් Telegram/Dashboard button එකෙන් control වේ) |
+| `SV_PROFIT_TARGET_USDT` | `0.10` *(optional)* | Fixed profit cut target (USDT). Set නොකළොත් balance එක අනුව `$0.10` සිට auto scale වේ |
+| `SV_DAILY_TARGET_USDT` | `2.0` *(optional)* | දවසේ SV profit target lock එක |
+| `SV_PAPER_MODE` | `false` *(optional)* | `true` දැම්මොත් real මුදල් වෙනුවට `$100` virtual balance එකක SV strategy test කළ හැක |
+| `SV_MAX_TRADES_PER_HOUR` | `8` *(optional)* | පැයකට උපරිම SV trades ගණන |
+| `SV_MAX_HOLD_MIN` | `15` *(optional)* | Stagnant trade එකක් auto-close වන උපරිම විනාඩි ගණන |
+| `SV_SESSION_ONLY` | `false` *(optional)* | `true` දැම්මොත් London/NY sessions (07:00–21:00 UTC) වලදී පමණක් SV Mode active වේ |
+| `SV_MAKER_ENTRY` | `false` *(optional)* | `true` දැම්මොත් Post-Only Limit order හරහා Maker fee ඉතිරි කරයි |
+| `SV_PARTIAL_RUNNER` | `false` *(optional)* | `true` දැම්මොත් 70% profit cut කර ඉතිරි 30% breakeven SL runner ලෙස තබයි |
+| `SV_COINS` | `BTC,ETH,SOL,XRP,DOGE` | *(optional)* SV Mode scan කරන high-liquidity coins ලැයිස්තුව |
