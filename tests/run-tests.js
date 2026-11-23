@@ -238,13 +238,13 @@ function mockRes() {
     assert.strictEqual(wf.leakageFree, true);
   });
 
-  await test('v8.3.1: Manual & Auto Leverage scales strictly between 5x and 20x', () => {
+  await test('v8.3.1: Manual & Auto Leverage respects the lowered caps (auto 3x-10x, hard cap 8x)', () => {
     const { computeAutoLeverage } = require('../lib/modules/riskAndValidation');
-    assert.strictEqual(computeAutoLeverage({ atrPct: 2.0, signalQualityScore: 70, maxLeverage: 20 }), 5);
-    assert.strictEqual(computeAutoLeverage({ atrPct: 0.3, signalQualityScore: 85, maxLeverage: 20 }), 20);
+    assert.strictEqual(computeAutoLeverage({ atrPct: 2.0, signalQualityScore: 70, maxLeverage: 20 }), 3);
+    assert.strictEqual(computeAutoLeverage({ atrPct: 0.3, signalQualityScore: 85, maxLeverage: 20 }), 10);
     const rMan = evaluateLiveRisk({ availBal: 500, entryPrice: 100, slPrice: 98, qtyStep: 0.1, minOrderQty: 0.1, maxOrderQty: 1000, autoLeverage: false, leverage: 15 });
     assert.strictEqual(rMan.approved, true);
-    assert.strictEqual(rMan.leverage, 15);
+    assert.strictEqual(rMan.leverage, 8); // manual 15x is now capped by MAX_LEVERAGE_CAP (default 8)
   });
 
   await test('v8.3.2: Auto Wallet % Mode (10%-100%) sizes margin with Auto-Leverage', async () => {
@@ -263,7 +263,8 @@ function mockRes() {
     assert.strictEqual(r50.approved, true);
     assert.strictEqual(r50.walletAllocUsed, true);
     assert.strictEqual(r50.walletAllocPct, 50);
-    assert.ok(r50.requiredMargin <= 51 && r50.requiredMargin >= 40);
+    assert.ok(r50.requiredMargin > 0 && r50.requiredMargin <= 51);
+    assert.ok(r50.maxRiskUsdt <= 2.05, 'Wallet % mode must still respect the 2% risk budget');
   });
 
   await test('v9.0: Session, Liquidation, Correlation, Funding Countdown & Coin Analytics', async () => {
