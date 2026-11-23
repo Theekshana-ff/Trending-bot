@@ -12,15 +12,21 @@ const {
 } = require('../lib/modules/telegramAlerts');
 const { runEAAnalysis, scanTopCoinsEA } = require('../lib/modules/eaStrategyEngine');
 const ultraPro = require('../lib/modules/ultraProEngine');
+const svEngine = require('../lib/modules/svScalpEngine');
 const { safeCompareSecret } = require('../lib/modules/securityAndState');
 
-function buildMainMenu(eaEnabled = false) {
+function buildMainMenu(eaEnabled = false, svEnabled = false) {
   const eaLabel = eaEnabled ? '🧠 EA Mode: ON 🟢' : '⚪ EA Mode: OFF';
+  const svLabel = svEnabled ? '⚡ SV Mode: ON 🟢' : '⚪ SV Mode: OFF';
   return {
     inline_keyboard: [
       [
         { text: '📊 Status', callback_data: 'cmd_status' },
         { text: '▶️ Start Next Trade', callback_data: 'cmd_next_trade' }
+      ],
+      [
+        { text: svLabel, callback_data: 'cmd_toggle_sv' },
+        { text: '⚡ SV Status', callback_data: 'cmd_sv_status' }
       ],
       [
         { text: eaLabel, callback_data: 'cmd_toggle_ea' },
@@ -119,6 +125,7 @@ async function buildWeeklyReportText() {
 async function handleCommand(cmd, parts, req) {
   const currentFilters = (await getBotFilters()) || {};
   let eaEnabled = Boolean(currentFilters.eaMode);
+  let svEnabled = svEngine.isSvModeActive(currentFilters);
 
   if (cmd === '/start' || cmd === '/menu' || cmd === '/help') {
     return {
@@ -133,7 +140,7 @@ async function handleCommand(cmd, parts, req) {
         `• \`/price BTCUSDT\` — Live Price & Funding\n` +
         `• \`/close SOLUSDT\` | \`/tp50 SOLUSDT\` | \`/be SOLUSDT\`\n` +
         `• \`/risk 2\` | \`/lev 10\``,
-      markup: buildMainMenu(eaEnabled)
+      markup: buildMainMenu(eaEnabled, svEnabled)
     };
   }
 
@@ -145,15 +152,41 @@ async function handleCommand(cmd, parts, req) {
       text: eaEnabled
         ? `🧠 *EA STRATEGY MODE: ON 🟢*\nදැන් trades ඔක්කොම v6 Sniper + EA Multi-Strategy MTF (5M/15M/1H/4H) confirmation එක්ක run වෙනවා.`
         : `⚪ *EA STRATEGY MODE: OFF*\nEA Mode off කළා. දැන් ඔයාගේ Normal v6 Sniper bot එක සාමාන්‍ය විදියටම run වෙනවා.`,
-      markup: buildMainMenu(eaEnabled)
+      markup: buildMainMenu(eaEnabled, svEnabled)
     };
+  }
+
+  // #40 One-Tap Telegram SV Mode Toggle (/sv_on, /sv_off, button)
+  if (cmd === 'cmd_toggle_sv' || cmd === '/sv_on' || cmd === '/sv_off') {
+    const envLock = String(process.env.SV_MODE || '').trim().toLowerCase();
+    if (envLock === 'true' || envLock === 'false') {
+      return {
+        text: `⚠️ *SV_MODE* දැනට Vercel Environment Variable එකෙන් *${envLock.toUpperCase()}* විදියට lock කරලා තියෙනවා.\nTelegram එකෙන් toggle කරන්න නම් Vercel \`SV_MODE\` key එක අයින් කරන්න, නැත්නම් Vercel එකෙන්ම \`true\` / \`false\` මාරු කරන්න.`,
+        markup: buildMainMenu(eaEnabled, svEnabled)
+      };
+    }
+    svEnabled = cmd === '/sv_on' ? true : cmd === '/sv_off' ? false : !svEnabled;
+    await setBotFilters({ ...currentFilters, svMode: svEnabled });
+    await appendJournalEntry({ type: 'TG_SV_MODE_TOGGLE', svMode: svEnabled });
+    return {
+      text: svEnabled
+        ? `⚡ *SV STANDALONE ENGINE: ON 🟢*\nදැන් Normal v6 & EA Mode සම්පූර්ණයෙන්ම නැවතිලා, 100% Auto Leverage/Margin SV Micro-Scalping Engine එක විතරක් run වෙනවා!`
+        : `⚪ *SV STANDALONE ENGINE: OFF*\nSV Mode off කළා. දැන් ඔයාගේ Normal v6 / EA bot එක ආපහු run වෙනවා.`,
+      markup: buildMainMenu(eaEnabled, svEnabled)
+    };
+  }
+
+  // #20 Dedicated SV Telegram Mini-Summary
+  if (cmd === 'cmd_sv_status' || cmd === '/sv_status') {
+    const summary = await svEngine.getSvStatusSummary();
+    return { text: summary, markup: buildMainMenu(eaEnabled, svEnabled) };
   }
 
   // Update #2: Multi-Coin EA Top-3 Scanner
   if (cmd === 'cmd_ea_scan_all' || cmd === '/eascan_all') {
     const top3 = await scanTopCoinsEA(undefined, 3);
     if (!top3.length) {
-      return { text: `⚠️ Could not scan coins right now.`, markup: buildMainMenu(eaEnabled) };
+      return { text: `⚠️ Could not scan coins right now.`, markup: buildMainMenu(eaEnabled, svEnabled) };
     }
     const lines = top3.map((ea, idx) => {
       const slTp = ea.suggestedSL ? ` | SL $${ea.suggestedSL} / TP $${ea.suggestedTP}` : '';
@@ -166,7 +199,7 @@ async function handleCommand(cmd, parts, req) {
 
     return {
       text: `🔎 *TOP-3 MULTI-COIN EA SCANNER*\n\n${lines}\n\n_Chart බලන්න \`/ea COINUSDT\` යවන්න._`,
-      markup: buildMainMenu(eaEnabled)
+      markup: buildMainMenu(eaEnabled, svEnabled)
     };
   }
 
@@ -191,13 +224,13 @@ async function handleCommand(cmd, parts, req) {
       signal: ea.signal
     });
 
-    return { text: caption, photoUrl, markup: buildMainMenu(eaEnabled) };
+    return { text: caption, photoUrl, markup: buildMainMenu(eaEnabled, svEnabled) };
   }
 
   // Update #10: Weekly Performance Report
   if (cmd === 'cmd_weekly' || cmd === '/weekly') {
     const reportText = await buildWeeklyReportText();
-    return { text: reportText, markup: buildMainMenu(eaEnabled) };
+    return { text: reportText, markup: buildMainMenu(eaEnabled, svEnabled) };
   }
 
   // Ultra Pro: Funding Rate Squeeze Hunter (#17)
@@ -205,13 +238,13 @@ async function handleCommand(cmd, parts, req) {
     const list = await ultraPro.scanFundingRateSqueezes(5);
     if (!list.length) {
       return { text: `🔥 *FUNDING SQUEEZE RADAR*
-No extreme funding rate squeezes right now.`, markup: buildMainMenu(eaEnabled) };
+No extreme funding rate squeezes right now.`, markup: buildMainMenu(eaEnabled, svEnabled) };
     }
     const lines = list.map(x =>
       `• *${x.symbol}* ($${x.price}) | Funding: *${x.fundingRatePct}%* | 24h: *${x.chg24h}%*
   _${x.squeezeType}_`
     ).join('\n');
-    return { text: `🔥 *FUNDING RATE SQUEEZE HUNTER*\n\n${lines}`, markup: buildMainMenu(eaEnabled) };
+    return { text: `🔥 *FUNDING RATE SQUEEZE HUNTER*\n\n${lines}`, markup: buildMainMenu(eaEnabled, svEnabled) };
   }
 
   // v14.0 Ultra Pro Max: EA Mode vs Normal v6 Performance Compare
@@ -230,7 +263,7 @@ No extreme funding rate squeezes right now.`, markup: buildMainMenu(eaEnabled) }
         `⚡ *Normal v6 Sniper:*\n` +
         `• Win Rate: *${cmp.normal.winRate}%* (${cmp.normal.wins}W / ${cmp.normal.losses}L)\n` +
         `• Net PnL: *$${cmp.normal.netPnl.toFixed(2)}*`,
-      markup: buildMainMenu(eaEnabled)
+      markup: buildMainMenu(eaEnabled, svEnabled)
     };
   }
 
@@ -242,7 +275,7 @@ No extreme funding rate squeezes right now.`, markup: buildMainMenu(eaEnabled) }
     ).join('\n');
     return {
       text: `🌍 *MARKET SESSIONS (AUTO ALERTS ON)*\nCurrent Active: *${cur.name}*\n\n${lines}`,
-      markup: buildMainMenu(eaEnabled)
+      markup: buildMainMenu(eaEnabled, svEnabled)
     };
   }
 
@@ -263,7 +296,7 @@ No extreme funding rate squeezes right now.`, markup: buildMainMenu(eaEnabled) }
         `Risk: *${currentFilters.riskPct || 'Default'}%* | Lev: *${currentFilters.leverage || 'Default'}x*\n` +
         `Avail: *$${acct.wallet.availableBalance.toFixed(2)}* | Equity: *$${acct.wallet.totalEquity.toFixed(2)}*\n\n` +
         `*Open Positions:*\n${posLines}`,
-      markup: buildMainMenu(eaEnabled)
+      markup: buildMainMenu(eaEnabled, svEnabled)
     };
   }
 
@@ -292,7 +325,7 @@ No extreme funding rate squeezes right now.`, markup: buildMainMenu(eaEnabled) }
     await appendJournalEntry({ type: 'TG_START_NEXT_TRADE', eaMode: eaEnabled, note: triggerNote });
     return {
       text: `▶️ *START NEXT TRADE*\nTrading is active. ${triggerNote}`,
-      markup: buildMainMenu(eaEnabled)
+      markup: buildMainMenu(eaEnabled, svEnabled)
     };
   }
 
@@ -302,42 +335,42 @@ No extreme funding rate squeezes right now.`, markup: buildMainMenu(eaEnabled) }
     await appendJournalEntry({ type: 'TG_EMERGENCY_STOP', ...stopRes });
     return {
       text: `🚨 *EMERGENCY STOP*\nClosed ${stopRes.closedCount} positions. Trading HALTED.`,
-      markup: buildMainMenu(eaEnabled)
+      markup: buildMainMenu(eaEnabled, svEnabled)
     };
   }
 
   if (cmd === '/resume' || cmd === 'cmd_resume') {
     await setTradingHalted(false);
     await appendJournalEntry({ type: 'TG_RESUME_TRADING' });
-    return { text: `✅ *TRADING RESUMED* via Telegram.`, markup: buildMainMenu(eaEnabled) };
+    return { text: `✅ *TRADING RESUMED* via Telegram.`, markup: buildMainMenu(eaEnabled, svEnabled) };
   }
 
   if (cmd === 'cmd_mode_strict' || cmd === 'cmd_mode_balanced' || (cmd === '/mode' && parts[1])) {
     const targetMode = (cmd === 'cmd_mode_balanced' || parts[1]?.toLowerCase() === 'balanced') ? 'balanced' : 'strict';
     await setBotFilters({ ...currentFilters, strategyMode: targetMode });
-    return { text: `⚙️ Strategy Mode switched to *${targetMode.toUpperCase()}*.`, markup: buildMainMenu(eaEnabled) };
+    return { text: `⚙️ Strategy Mode switched to *${targetMode.toUpperCase()}*.`, markup: buildMainMenu(eaEnabled, svEnabled) };
   }
 
   if (cmd === '/price' && parts[1]) {
-    return { text: await fetchLivePrice(parts[1]), markup: buildMainMenu(eaEnabled) };
+    return { text: await fetchLivePrice(parts[1]), markup: buildMainMenu(eaEnabled, svEnabled) };
   }
 
   if (cmd === '/risk' && parts[1]) {
     const riskPct = Number(parts[1]);
     if (isNaN(riskPct) || riskPct <= 0 || riskPct > 20) {
-      return { text: `⚠️ Valid risk % එකක් දෙන්න (උදා: \`/risk 2\`)`, markup: buildMainMenu(eaEnabled) };
+      return { text: `⚠️ Valid risk % එකක් දෙන්න (උදා: \`/risk 2\`)`, markup: buildMainMenu(eaEnabled, svEnabled) };
     }
     await setBotFilters({ ...currentFilters, riskPct });
-    return { text: `🎯 Risk per trade updated to *${riskPct}%*.`, markup: buildMainMenu(eaEnabled) };
+    return { text: `🎯 Risk per trade updated to *${riskPct}%*.`, markup: buildMainMenu(eaEnabled, svEnabled) };
   }
 
   if (cmd === '/lev' && parts[1]) {
     const leverage = Number(parts[1]);
     if (isNaN(leverage) || leverage < 1 || leverage > 50) {
-      return { text: `⚠️ Valid leverage එකක් දෙන්න (උදා: \`/lev 10\`)`, markup: buildMainMenu(eaEnabled) };
+      return { text: `⚠️ Valid leverage එකක් දෙන්න (උදා: \`/lev 10\`)`, markup: buildMainMenu(eaEnabled, svEnabled) };
     }
     await setBotFilters({ ...currentFilters, leverage });
-    return { text: `⚡ Leverage updated to *${leverage}x*.`, markup: buildMainMenu(eaEnabled) };
+    return { text: `⚡ Leverage updated to *${leverage}x*.`, markup: buildMainMenu(eaEnabled, svEnabled) };
   }
 
   if (cmd === '/close' && parts[1]) {
@@ -346,7 +379,7 @@ No extreme funding rate squeezes right now.`, markup: buildMainMenu(eaEnabled) }
       text: closeRes.closed
         ? `🔒 *CLOSED ${closeRes.symbol}* | Qty: ${closeRes.qty}`
         : `⚠️ Could not close ${parts[1]}: ${closeRes.reason}`,
-      markup: buildMainMenu(eaEnabled)
+      markup: buildMainMenu(eaEnabled, svEnabled)
     };
   }
 
@@ -357,7 +390,7 @@ No extreme funding rate squeezes right now.`, markup: buildMainMenu(eaEnabled) }
     const res50 = await fn(parts[1].toUpperCase(), 0.5);
     return {
       text: res50.ok ? `✂️ *50% Partial Close (${parts[1].toUpperCase()}):* ${res50.message}` : `⚠️ ${res50.message}`,
-      markup: buildMainMenu(eaEnabled)
+      markup: buildMainMenu(eaEnabled, svEnabled)
     };
   }
 
@@ -368,7 +401,7 @@ No extreme funding rate squeezes right now.`, markup: buildMainMenu(eaEnabled) }
     const resBe = await fn(parts[1].toUpperCase());
     return {
       text: resBe.ok ? `🛡️ *Breakeven SL (${parts[1].toUpperCase()}):* ${resBe.message}` : `⚠️ ${resBe.message}`,
-      markup: buildMainMenu(eaEnabled)
+      markup: buildMainMenu(eaEnabled, svEnabled)
     };
   }
 
@@ -380,7 +413,7 @@ No extreme funding rate squeezes right now.`, markup: buildMainMenu(eaEnabled) }
     const lines = list
       .map(t => `${Number(t.closedPnl) >= 0 ? '✅' : '🔻'} *${t.symbol}* (${t.side}): *$${Number(t.closedPnl).toFixed(2)}*`)
       .join('\n') || 'No recent closed trades.';
-    return { text: `📜 *LAST 5 CLOSED TRADES*\n${lines}`, markup: buildMainMenu(eaEnabled) };
+    return { text: `📜 *LAST 5 CLOSED TRADES*\n${lines}`, markup: buildMainMenu(eaEnabled, svEnabled) };
   }
 
   if (cmd === '/pnl' || cmd === 'cmd_pnl') {
@@ -403,11 +436,11 @@ No extreme funding rate squeezes right now.`, markup: buildMainMenu(eaEnabled) }
         `Unrealized PnL: *$${uPnl.toFixed(2)}*\n` +
         `Today Realized PnL: *$${realizedToday.toFixed(2)}*\n` +
         `Today Trades: *${todayTrades.length}* (Win Rate: *${winRate}%*)`,
-      markup: buildMainMenu(eaEnabled)
+      markup: buildMainMenu(eaEnabled, svEnabled)
     };
   }
 
-  return { text: `❓ Unknown command. Type \`/menu\` to see all options.`, markup: buildMainMenu(eaEnabled) };
+  return { text: `❓ Unknown command. Type \`/menu\` to see all options.`, markup: buildMainMenu(eaEnabled, svEnabled) };
 }
 
 module.exports = async (req, res) => {

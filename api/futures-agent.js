@@ -26,6 +26,7 @@ const { checkTradingSession, checkLiquidationSafety, checkCorrelationGuard, chec
 const { calcVWAP, checkVwapFilter, detectDivergence, evaluateOrderBookImbalance, fetchBtcDominanceContext, checkBtcDominanceFilter, detectVolatilitySqueeze, detectFlashCrash, evaluateSelfLearningCoin, checkMacroCalendarGuard, selectStrategyRegime, detectMomentumBreakout, evaluateFundingBonus, detectStopHuntReentry, evaluateBestHourBoost } = require('../lib/modules/profitEngine');
 const { evaluateBeforeTrade } = require('../lib/modules/eaTradeGate');
 const ultraPro = require('../lib/modules/ultraProEngine');
+const svEngine = require('../lib/modules/svScalpEngine');
 
 const TOP_COINS = ['SOL', 'XRP', 'DOGE', 'SUI', 'ADA', 'OP', 'ARB', 'LINK', 'AVAX', 'NEAR', 'APT', 'INJ', 'RENDER', 'TRX', 'LTC', 'BNB', 'ETH', 'BTC'];
 const ALLOWED_TFS = new Set(['5m', '15m', '1h', '4h']);
@@ -524,6 +525,19 @@ module.exports = async (req, res) => {
       if (!lock.acquired) return res.status(409).json(makeResponse(false, { error: lock.reason }, { errorCode: 'CRON_LOCKED' }));
 
       try {
+        // v14.1 STANDALONE SV MODE: Strict Engine Isolation (#1)
+        // When SV Mode is ON, Normal v6 Pipeline, EA Gate, and Groq AI are completely bypassed.
+        const preFilters = await getBotFilters().catch(() => ({}));
+        if (svEngine.isSvModeActive(preFilters)) {
+          const haltedState = await getTradingHalted();
+          const svRes = await svEngine.runSvCycle({
+            halted: Boolean(haltedState.halted),
+            autoExecute: isAutoExecuteEnabled(),
+            liveAuthorized: isServerLiveAuthorized()
+          });
+          return res.status(200).json(makeResponse(true, { svEngine: svRes }));
+        }
+
         // v13.0 ULTRA PRO: Auto Market Session Open Alerts (Tokyo / London / NY / Overlap)
         try {
           const sessionAlert = await ultraPro.checkAndGetSessionOpenAlert();
@@ -687,6 +701,8 @@ module.exports = async (req, res) => {
     const telemetry = {
       liveTradingStatus: health.tradingHalted ? 'EMERGENCY_HALTED' : (isServerLiveAuthorized() ? 'BYBIT_LIVE_ARMED' : 'ENV_GATE_LOCKED'),
       autoPilotStatus: isAutoExecuteEnabled() ? 'AUTO_PILOT_ON' : 'MANUAL_EXEC',
+      eaModeEnv: String(process.env.EA_MODE || 'AUTO').trim().toUpperCase(),
+      svModeEnv: String(process.env.SV_MODE || 'AUTO').trim().toUpperCase(),
       telegramEnabled: Boolean((process.env.TELEGRAM_BOT_TOKEN || '').trim() && (process.env.TELEGRAM_CHAT_ID || '').trim()),
       aiProvider: getAiProviderConfig().provider,
       region: health.region,
@@ -735,7 +751,8 @@ module.exports = async (req, res) => {
         pyramidingEnabled: body.pyramidingEnabled === true,
         sniperLimitScaling: body.sniperLimitScaling === true,
         topMoverScanner: body.topMoverScanner === true,
-        eaMode: typeof body.eaMode === 'boolean' ? body.eaMode : Boolean(existingFilters.eaMode)
+        eaMode: typeof body.eaMode === 'boolean' ? body.eaMode : Boolean(existingFilters.eaMode),
+        svMode: typeof body.svMode === 'boolean' ? body.svMode : Boolean(existingFilters.svMode)
       });
       await appendJournalEntry({ type: 'BOT_FILTERS_UPDATED', ...saved });
       return res.status(200).json(makeResponse(true, { botFilters: saved }));
