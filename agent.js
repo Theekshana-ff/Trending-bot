@@ -1,6 +1,7 @@
 // File: agent.js (v6 Complete Sniper Edition — TF Selector, S/R Chart Lines, Patterns, ADX/RSI/BTC/Daily Lock)
 (function () {
   const $ = (id) => document.getElementById(id);
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   let chart = null;
   let candleSeries = null;
   let activePriceLines = [];
@@ -38,7 +39,13 @@
   }
 
   function makeNonce() {
-    return 'n_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    try {
+      const a = new Uint8Array(12);
+      crypto.getRandomValues(a);
+      return 'n_' + Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('') + Date.now().toString(36);
+    } catch (e) {
+      return 'n_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    }
   }
 
   async function callAgent(payload) {
@@ -128,7 +135,7 @@
     }
     if (Array.isArray(data.coinAnalytics) && $('coin-analytics-box')) {
       $('coin-analytics-box').innerHTML = data.coinAnalytics.length
-        ? data.coinAnalytics.map(c => `<div class="bg-slate-900/80 border border-slate-800 rounded p-2"><div class="font-bold text-white">${c.symbol}</div><div class="${c.netPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${c.netPnl >= 0 ? '+' : ''}$${c.netPnl}</div><div class="text-[10px] text-slate-400">WR ${c.winRate}% (${c.wins}W/${c.losses}L)</div></div>`).join('')
+        ? data.coinAnalytics.map(c => `<div class="bg-slate-900/80 border border-slate-800 rounded p-2"><div class="font-bold text-white">${esc(c.symbol)}</div><div class="${c.netPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${c.netPnl >= 0 ? '+' : ''}$${c.netPnl}</div><div class="text-[10px] text-slate-400">WR ${c.winRate}% (${c.wins}W/${c.losses}L)</div></div>`).join('')
         : '<span>No closed coin analytics yet.</span>';
     }
     if (data.modeComparison) {
@@ -260,11 +267,11 @@
       return `
         <div class="flex items-center justify-between py-2 border-b border-slate-800 last:border-0 gap-2">
           <div>
-            <span class="font-bold ${p.side === 'Buy' ? 'text-emerald-400' : 'text-rose-400'}">${p.symbol} ${p.side === 'Buy' ? 'LONG' : 'SHORT'} (${p.leverage}x ${p.tradeMode === 1 ? 'ISO' : 'CROSS'})</span>
-            <div class="text-[11px] text-slate-400">Size: ${p.size} · Entry: ${p.avgPrice} · Mark: ${p.markPrice}</div>
-            <div class="text-[11px] ${pnlColor}">uPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(4)} · SL: ${p.stopLoss || 'NONE'} · Trail: ${p.trailingStop || '--'}</div>
+            <span class="font-bold ${p.side === 'Buy' ? 'text-emerald-400' : 'text-rose-400'}">${esc(p.symbol)} ${p.side === 'Buy' ? 'LONG' : 'SHORT'} (${esc(p.leverage)}x ${p.tradeMode === 1 ? 'ISO' : 'CROSS'})</span>
+            <div class="text-[11px] text-slate-400">Size: ${esc(p.size)} · Entry: ${esc(p.avgPrice)} · Mark: ${esc(p.markPrice)}</div>
+            <div class="text-[11px] ${pnlColor}">uPnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(4)} · SL: ${esc(p.stopLoss || 'NONE')} · Trail: ${esc(p.trailingStop || '--')}</div>
           </div>
-          <button onclick="window.__closeBybitPos('${p.symbol}')" class="px-2.5 py-1 rounded bg-rose-500/20 hover:bg-rose-500/40 text-rose-300 text-[11px] shrink-0">Close</button>
+          <button onclick="window.__closeBybitPos('${esc(p.symbol)}')" class="px-2.5 py-1 rounded bg-rose-500/20 hover:bg-rose-500/40 text-rose-300 text-[11px] shrink-0">Close</button>
         </div>
       `;
     }).join('');

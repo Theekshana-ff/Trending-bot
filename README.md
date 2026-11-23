@@ -74,3 +74,26 @@
    ```bash
    npm run check
    npm test
+
+
+---
+
+## Update 25-26: Extra Environment Variables & Telegram Webhook Secret
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `TELEGRAM_WEBHOOK_SECRET` | *(required for Telegram commands)* | Random string (A-Z a-z 0-9 _ -). Webhook rejects calls without it |
+| `MAX_CHASE_24H_PCT` | `10` | Skip coins that already moved more than this in 24h |
+| `MAX_LEVERAGE_CAP` | `8` | Global leverage hard cap |
+| `ALLOW_MEAN_REVERSION_FLIP` | `false` | Counter-trend flip (off by default) |
+| `MIN_AUTO_SCORE` | `0` | Raise the autopilot minimum score (floor is 80 strict / 70 balanced) |
+| `ENABLE_LIMIT_CHASE` | `false` | Re-enable chasing of drifting limit orders |
+| `LIMIT_MAX_AGE_MIN` | `30` | Cancel unfilled limit orders after N minutes |
+
+**Telegram webhook must be re-registered with the secret:**
+```bash
+curl "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
+  -d "url=https://<your-app>.vercel.app/api/telegram-webhook" \
+  -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+```
+Without `TELEGRAM_WEBHOOK_SECRET` the webhook is fail-closed (ignores every command).
