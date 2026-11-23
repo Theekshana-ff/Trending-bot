@@ -267,6 +267,57 @@ function mockRes() {
     assert.ok(r50.maxRiskUsdt <= 2.05, 'Wallet % mode must still respect the 2% risk budget');
   });
 
+
+  await test('Update 25: TP stays 8R runner target; win streak never increases size; healthy-move ranking; limit chase OFF by default', async () => {
+    const { healthyMoveScore, computeAndValidateEntry } = require('../lib/modules/riskAndValidation');
+    const { chaseOpenLimitOrders } = require('../lib/modules/bybitLiveClient');
+    const base = { availBal: 1000, entryPrice: 100, slPrice: 98, qtyStep: 0.1, minOrderQty: 0.1, maxOrderQty: 100000, autoLeverage: true, atrPct: 0.8, signalQualityScore: 90, symbol: 'SOLUSDT' };
+    const r0 = evaluateLiveRisk({ ...base, consecutiveWins: 0 });
+    const r3 = evaluateLiveRisk({ ...base, consecutiveWins: 5, bestHourMultiplier: 1.15 });
+    assert.strictEqual(r3.orderQty, r0.orderQty);
+    const rLoss = evaluateLiveRisk({ ...base, consecutiveLosses: 2 });
+    assert.ok(rLoss.orderQty < r0.orderQty);
+    assert.ok(healthyMoveScore({ chgPct: 4, turnover: 1e9 }) > healthyMoveScore({ chgPct: 18, turnover: 1e9 }));
+    assert.ok(healthyMoveScore({ chgPct: 3, turnover: 1e9 }) > healthyMoveScore({ chgPct: 0.1, turnover: 1e9 }));
+    const lev = evaluateLiveRisk({ ...base, autoLeverage: false, leverage: 50 });
+    assert.ok(lev.leverage <= 8);
+    const chased = await chaseOpenLimitOrders([{ orderType: 'Limit', createdTime: Date.now() - 10 * 60000, symbol: 'SOLUSDT', side: 'Buy', price: '100', orderId: 'x' }], { SOLUSDT: { bid1: 100.5, ask1: 100.6 } }, { SOLUSDT: { tickSize: 0.01 } });
+    assert.deepStrictEqual(chased, []);
+  });
+
+
+  await test('Update 26: constant-time secret compare, auth-failure throttle, Telegram webhook secret fail-closed', async () => {
+    const sec = require('../lib/modules/securityAndState');
+    assert.strictEqual(sec.safeCompareSecret('abc123', 'abc123'), true);
+    assert.strictEqual(sec.safeCompareSecret('abc123', 'abc1234'), false);
+    assert.strictEqual(sec.safeCompareSecret('', ''), false);
+    const ip = 'test-ip-' + Date.now();
+    assert.strictEqual(sec.isAuthBlocked(ip), false);
+    for (let i = 0; i < 8; i++) sec.recordAuthFailure(ip);
+    assert.strictEqual(sec.isAuthBlocked(ip), true);
+
+    const hook = require('../api/telegram-webhook');
+    const mkRes = () => { const r = { code: 0, sent: null }; r.status = (c) => { r.code = c; return r; }; r.send = (b) => { r.sent = b; return r; }; return r; };
+    const saved = { s: process.env.TELEGRAM_WEBHOOK_SECRET, c: process.env.TELEGRAM_CHAT_ID, i: process.env.TELEGRAM_WEBHOOK_INSECURE_OK };
+    process.env.TELEGRAM_CHAT_ID = '123';
+    delete process.env.TELEGRAM_WEBHOOK_INSECURE_OK;
+    const forged = { method: 'POST', headers: {}, body: { message: { text: '/stop', chat: { id: 123 } } } };
+    // No secret configured -> blocked (no handler work, no halt)
+    delete process.env.TELEGRAM_WEBHOOK_SECRET;
+    let res = mkRes();
+    await hook(forged, res);
+    assert.strictEqual(res.sent, 'OK');
+    assert.strictEqual((await sec.getTradingHalted()).halted, false);
+    // Secret configured but header wrong -> blocked
+    process.env.TELEGRAM_WEBHOOK_SECRET = 'correct-secret';
+    res = mkRes();
+    await hook({ ...forged, headers: { 'x-telegram-bot-api-secret-token': 'wrong' } }, res);
+    assert.strictEqual((await sec.getTradingHalted()).halted, false);
+    if (saved.s === undefined) delete process.env.TELEGRAM_WEBHOOK_SECRET; else process.env.TELEGRAM_WEBHOOK_SECRET = saved.s;
+    if (saved.c === undefined) delete process.env.TELEGRAM_CHAT_ID; else process.env.TELEGRAM_CHAT_ID = saved.c;
+    if (saved.i !== undefined) process.env.TELEGRAM_WEBHOOK_INSECURE_OK = saved.i;
+  });
+
   await test('v9.0: Session, Liquidation, Correlation, Funding Countdown & Coin Analytics', async () => {
     const { checkTradingSession, checkLiquidationSafety, checkCorrelationGuard, checkFundingCountdownGuard, computeCoinAnalytics } = require('../lib/modules/advancedGuards');
     const { setBotFilters, getBotFilters } = require('../lib/modules/securityAndState');
