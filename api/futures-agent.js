@@ -42,6 +42,16 @@ function isAutoExecuteEnabled() {
   return String(process.env.AUTO_EXECUTE || '').trim().toLowerCase() === 'true';
 }
 
+
+// FIX #1 helpers: avoid chasing coins that already moved too far in 24h
+const MAX_CHASE_24H_PCT = Number(process.env.MAX_CHASE_24H_PCT || 10);
+function healthyMoveScore(c) {
+  const mv = Math.abs(Number(c.chgPct) || 0);
+  // best zone: 1%-6% move (trend started, not exhausted); penalise tiny and large moves
+  const moveFit = mv < 1 ? mv : (mv <= 6 ? 1 + (mv - 1) * 0.2 : Math.max(0.2, 2 - (mv - 6) * 0.4));
+  return moveFit * Math.log10(Math.max(10, Number(c.turnover) || 10));
+}
+
 // v6 Update #3: BTC Trend Filter (15m + 1h) for Altcoin Fakeout Prevention
 async function getBtcTrendContext() {
   try {
@@ -116,7 +126,9 @@ async function runSixStagePipeline({
     const moverScore = Math.abs(t.chgPct) * Math.log10(Math.max(10, turnover));
     return { coin, bybitSymbol, price: t.lastPrice, chgPct: t.chgPct, turnover, moverScore, spreadPct, fundingRate: t.fundingRate, spec };
   }).filter(Boolean)
-    .sort((a, b) => useTopMover ? (b.moverScore - a.moverScore) : (Math.abs(b.chgPct) - Math.abs(a.chgPct)))
+    // FIX #1: skip over-extended coins (already pumped/dumped) and rank by healthy move x liquidity
+    .filter(c => coinMode === 'manual' || Math.abs(c.chgPct) <= MAX_CHASE_24H_PCT)
+    .sort((a, b) => useTopMover ? (b.moverScore - a.moverScore) : (healthyMoveScore(b) - healthyMoveScore(a)))
     .slice(0, useTopMover ? 8 : 4);
 
   if (!candidates.length) {
@@ -164,9 +176,12 @@ async function runSixStagePipeline({
     const elliott = analyzeElliottWave(structure.swingHighs, structure.swingLows);
     const patternData = detectChartPatterns(cPrimary, structure);
 
-    let dir = (mtf.decision === 'LONG' || mtf.decision === 'SHORT') ? mtf.decision : (structure.structure === 'BEARISH_LH_LL' ? 'SHORT' : 'LONG');
-    if (humanBias === 'long_only') dir = 'LONG';
-    if (humanBias === 'short_only') dir = 'SHORT';
+    // FIX #2: never fall back to a blind LONG when MTF has no clear direction
+    const mtfHasDirection = (mtf.decision === 'LONG' || mtf.decision === 'SHORT');
+    let dir = mtfHasDirection ? mtf.decision : (structure.structure === 'BEARISH_LH_LL' ? 'SHORT' : 'LONG');
+    let hasClearDirection = mtfHasDirection;
+    if (humanBias === 'long_only') { dir = 'LONG'; hasClearDirection = true; }
+    if (humanBias === 'short_only') { dir = 'SHORT'; hasClearDirection = true; }
 
     // v6 Sniper Safety Gates
     const btcOpposing = cand.coin !== 'BTC' && (
@@ -181,9 +196,12 @@ async function runSixStagePipeline({
       supportLevels: structure.supportLevels, resistanceLevels: structure.resistanceLevels,
       divergence, patternData
     });
-    if (regimeInfo.allowMeanReversion && regimeInfo.mrDirection && humanBias === 'ai_100') {
+    // FIX #3: counter-trend mean-reversion flip is OFF by default (enable with ALLOW_MEAN_REVERSION_FLIP=true)
+    if (regimeInfo.allowMeanReversion && regimeInfo.mrDirection && humanBias === 'ai_100' && process.env.ALLOW_MEAN_REVERSION_FLIP === 'true') {
       dir = regimeInfo.mrDirection;
+      hasClearDirection = true;
     }
+    if (process.env.ALLOW_MEAN_REVERSION_FLIP !== 'true') regimeInfo.allowMeanReversion = false;
 
     const isBalanced = botFilters?.strategyMode === 'balanced';
     const adxFail = !volVol.isTrending && !(isBalanced && volVol.adx >= 18) && !regimeInfo.allowMeanReversion;
@@ -245,6 +263,7 @@ async function runSixStagePipeline({
     let noTradeReason = null;
     if (activeSymbols.has(cand.bybitSymbol)) noTradeReason = `NO_TRADE: Active position or pending order already exists for ${cand.bybitSymbol}.`;
     else if (mtf.conflictDetected) noTradeReason = mtf.reason;
+    else if (!hasClearDirection) noTradeReason = 'NO_TRADE: No clear multi-timeframe direction (blind default disabled).';
     else if (btcOpposing) noTradeReason = `NO_TRADE: BTC 15m/1h trend is ${btcTrend.trend} (opposes ${cand.coin} ${dir}).`;
     else if (adxFail) noTradeReason = `NO_TRADE: Choppy market (ADX ${volVol.adx} < 22).`;
     else if (!rsiCheck.ok) noTradeReason = rsiCheck.reason;
@@ -567,7 +586,7 @@ module.exports = async (req, res) => {
               walletAllocEnabled: walletAlloc.enabled,
               walletAllocPct: (walletAlloc.pct || 50) / 100
             });
-            const minAutoScore = botFilters?.strategyMode === 'balanced' ? 60 : 75;
+            const minAutoScore = Math.max(Number(process.env.MIN_AUTO_SCORE || 0), botFilters?.strategyMode === 'balanced' ? 70 : 80); // FIX #8: higher quality bar
             if (scanRes.pick.signalQualityScore >= minAutoScore) {
               const [fearGreed, newsRes, pnlStats] = await Promise.all([
                 fetchFearAndGreed(),
