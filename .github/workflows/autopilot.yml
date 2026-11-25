@@ -1,0 +1,44 @@
+name: Bybit Live Cron Guardian
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  guardian-tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate Required Secrets & Base URL
+        env:
+          BOT_BASE_URL: ${{ secrets.BOT_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$BOT_BASE_URL" ]; then
+            echo "ERROR: BOT_BASE_URL secret is not configured."
+            exit 1
+          fi
+          if [ -z "$CRON_SECRET" ]; then
+            echo "ERROR: CRON_SECRET secret is not configured."
+            exit 1
+          fi
+          case "$BOT_BASE_URL" in
+            https://*) ;;
+            *) echo "ERROR: BOT_BASE_URL must start with https://"; exit 1 ;;
+          esac
+
+      - name: Health Check
+        env:
+          BOT_BASE_URL: ${{ secrets.BOT_BASE_URL }}
+        run: |
+          curl -fsS "${BOT_BASE_URL%/}/api/futures-agent?action=health" | grep -q '"ok":true'
+
+      - name: Trigger Live Position Guardian (cron_tick)
+        env:
+          BOT_BASE_URL: ${{ secrets.BOT_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -fsS -X POST "${BOT_BASE_URL%/}/api/futures-agent" \
+            -H "Content-Type: application/json" \
+            -H "x-cron-secret: ${CRON_SECRET}" \
+            -d '{"action":"cron_tick"}'
