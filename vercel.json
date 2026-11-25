@@ -8,9 +8,6 @@
     },
     "api/telegram-webhook.js": {
       "maxDuration": 30
-    },
-    "api/news.js": {
-      "maxDuration": 15
     }
   }
 }

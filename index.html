@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bybit SV Mode Only Bot (v15.0)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #070b14; color: #e2e8f0; font-family: ui-sans-serif, system-ui, sans-serif; }
+    .card { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  </style>
+</head>
+<body class="min-h-screen p-3 sm:p-6">
+  <div class="max-w-4xl mx-auto space-y-4">
+    <header class="card p-4 flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+          ⚡ BYBIT SV MODE ONLY BOT <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 mono">v15.0</span>
+        </h1>
+        <p class="text-xs text-slate-400 mono mt-0.5">Standalone 1m/3m Micro-Scalping · 100% Auto Leverage & Margin · Net-of-Fee Profit Cut</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span id="badge-sv" class="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 mono">SV: --</span>
+        <span id="badge-live" class="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 mono">GATE: --</span>
+      </div>
+    </header>
+
+    <section class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div class="card p-3">
+        <div class="text-[10px] uppercase text-slate-400 mono">Available Balance</div>
+        <div id="stat-avail" class="text-xl font-bold text-emerald-400 mono mt-1">$0.00</div>
+      </div>
+      <div class="card p-3">
+        <div class="text-[10px] uppercase text-slate-400 mono">Total Equity</div>
+        <div id="stat-equity" class="text-xl font-bold text-sky-400 mono mt-1">$0.00</div>
+      </div>
+      <div class="card p-3">
+        <div class="text-[10px] uppercase text-slate-400 mono">SV Today Net PnL</div>
+        <div id="stat-sv-pnl" class="text-xl font-bold text-white mono mt-1">$0.000</div>
+      </div>
+      <div class="card p-3">
+        <div class="text-[10px] uppercase text-slate-400 mono">SV Cuts / Win Rate</div>
+        <div id="stat-sv-wr" class="text-xl font-bold text-amber-300 mono mt-1">0 · 0%</div>
+      </div>
+    </section>
+
+    <section class="card p-4 space-y-3">
+      <div class="flex flex-col sm:flex-row gap-2">
+        <input id="agent-secret" type="password" placeholder="Enter AGENT_SECRET password"
+          class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mono text-white focus:outline-none focus:border-sky-500" />
+        <button id="btn-sync" class="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold mono">🔄 Sync Bybit</button>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <button id="btn-run-sv" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold mono">▶️ Run SV Scan & Trade Now</button>
+        <button id="btn-toggle-sv" class="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold mono">⚡ Toggle SV Mode</button>
+        <button id="btn-resume" class="px-4 py-2 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold mono">✅ Resume</button>
+        <button id="btn-stop" class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold mono ml-auto">🚨 Emergency Stop & Close All</button>
+      </div>
+      <div id="status-msg" class="text-xs mono text-slate-400">Enter password and click Sync Bybit.</div>
+    </section>
+
+    <section class="card p-4">
+      <h2 class="text-xs font-bold uppercase tracking-wider text-sky-400 mono mb-2">📌 OPEN POSITIONS</h2>
+      <div id="positions-box" class="text-xs mono text-slate-400">No open positions loaded.</div>
+    </section>
+
+    <section class="card p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-xs font-bold uppercase tracking-wider text-emerald-400 mono">📜 LIVE SV TERMINAL & JOURNAL</h2>
+        <button id="btn-clear-log" class="text-[10px] text-slate-400 hover:text-white mono">Clear</button>
+      </div>
+      <div id="terminal-logs" class="bg-slate-950 border border-slate-800 rounded-lg p-3 h-56 overflow-y-auto text-[11px] mono space-y-1 text-slate-300"></div>
+    </section>
+  </div>
+  <script src="agent.js"></script>
+</body>
+</html>

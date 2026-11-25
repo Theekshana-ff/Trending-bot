@@ -1,119 +1,55 @@
-# Bybit V5 Live Trading Bot (v8.3.0 Hardened)
+# Bybit V5 — SV MODE ONLY Bot (v15.0)
 
-
-මෙය **Bybit V5 Linear Futures** සඳහා සකස් කළ 6-Stage Quant Trading Bot එකකි. Singapore (`sin1`) Vercel server එකේ deploy වන අතර, **Groq AI Live News Auto-VETO**, **Redis Safety Locks**, සහ **Automated Tests** සමඟ ක්‍රියා කරයි.
-
----
-
-## පියවර 1: GitHub Setup
-
-### 1.1 Update කළ යුතු Files (v8.3.0)
-`Trending-bot-v8.3-hardened.zip` එක extract කර පහත files 9 ඔයාගේ GitHub repo එකේ replace කර **Commit** කරන්න:
-- `api/futures-agent.js`
-- `lib/modules/aiAgent.js`
-- `lib/modules/aiBrainAndBacktest.js`
-- `lib/modules/bybitLiveClient.js`
-- `lib/modules/riskAndValidation.js`
-- `lib/modules/securityAndState.js`
-- `lib/modules/structureSmc.js`
-- `tests/run-tests.js`
-- `package.json`
-
-### 1.2 GitHub Actions Secrets
-**GitHub Repo → Settings → Secrets and variables → Actions** වෙත ගොස් පහත secrets 2 add කරන්න:
-| Secret Name | දාන්න ඕනේ Value එක |
-| :--- | :--- |
-| `BOT_BASE_URL` | ඔයාගේ Vercel link එක (උදා: `https://trending0bot.vercel.app`) |
-| `CRON_SECRET` | Vercel එකේ දාන `CRON_SECRET` password එකම |
+මෙය **Bybit V5 Linear Futures** සඳහා **SV Mode පමණක්** ක්‍රියාත්මක වන පිරිසිදු **Standalone 1m/3m Micro-Scalping Bot** එකකි.
+අනෙකුත් සියලුම modes (Normal v6, EA Mode, Ultra Pro, Groq AI) සම්පූර්ණයෙන්ම ඉවත් කර ඇති නිසා කිසිදු mode conflict එකක් ඇති නොවේ.
 
 ---
 
-## පියවර 2: Vercel Environment Variables
+## ප්‍රධාන විශේෂාංග (SV Mode Only)
+- **100% Auto Leverage & Auto Margin:** Balance එක සහ 1m volatility අනුව ඉබේම ආරක්ෂිත leverage (`3x–8x`) සහ margin ගණනය වේ.
+- **Net-of-Fee Profit Cut (`$0.10`+):** Bybit fees කැපුණාට පසු ශුද්ධ `$0.10` (හෝ balance-scaled target) ලැබෙන ගාණටම Exchange-level Auto TP තබයි; profit cut වූ වහාම ඊළඟ හොඳම trade එක open කරයි.
+- **All 40 SV Micro-Scalping Updates:** 1m/3m EMA 9/21 + VWAP, Fast RSI(7) + StochRSI, Heikin Ashi smoothing, Bollinger Bounce, 1m FVG Tap, OBI Micro-Burst, Micro-Spread Guard, BTC 1m Pulse Sync, BTC Flash Emergency Exit, 5m Same-Coin Cooldown, 3-Loss 30m Brake, Daily Target Lock, සහ Telegram Control Panel.
 
-**Vercel Dashboard → Project → Settings → Environment Variables** වෙත ගොස් පහත keys ටික add කරන්න:
+---
+
+## Vercel Environment Variables
+
+**Vercel Dashboard → Project → Settings → Environment Variables** වෙත ගොස් පහත keys set කර **Redeploy** කරන්න:
 
 ### A. අනිවාර්ය Keys (Core)
 | Variable Name | විස්තරය |
 | :--- | :--- |
-| `AGENT_SECRET` | Dashboard එකට login වෙන Agent Password එක |
-| `CRON_SECRET` | GitHub Actions Cron Guardian එකට දුන්න secret එකම |
-| `BYBIT_API_KEY` | Bybit V5 API Key (Read-Write Contract Orders & Positions, No IP restriction) |
+| `AGENT_SECRET` | Dashboard login password එක |
+| `CRON_SECRET` | GitHub Actions / cron-job.org secret එක |
+| `BYBIT_API_KEY` | Bybit V5 API Key (Contract Orders & Positions) |
 | `BYBIT_API_SECRET` | Bybit V5 API Secret |
-| `UPSTASH_REDIS_REST_URL` | Upstash Redis URL (Live locks, nonces, halt state සඳහා අනිවාර්යයි) |
+| `UPSTASH_REDIS_REST_URL` | Upstash Redis URL |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis Token |
+| `ALLOW_LIVE_TRADING` | `true` (Live trading gate) |
+| `AUTO_EXECUTE` | `true` (Auto scalping ON කිරීමට) |
+| `BYBIT_TESTNET` | `false` (Mainnet) හෝ `true` (Testnet) |
 
-### B. AI & Trading Controls
-| Variable Name | දාන්න ඕනේ Value එක | විස්තරය |
+### B. Telegram Keys
+| Variable Name | විස්තරය |
+| :--- | :--- |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token එක |
+| `TELEGRAM_CHAT_ID` | ඔයාගේ Telegram Chat ID එක |
+| `TELEGRAM_WEBHOOK_SECRET` | Webhook security secret token එක (Fail-closed) |
+
+### C. SV Mode Controls (Optional)
+| Variable Name | Default | විස්තරය |
 | :--- | :--- | :--- |
-| `GROQ_API_KEY` | `gsk_...` | `console.groq.com` වෙතින් ගත් නොමිලේ Groq API key එක |
-| `AI_FAIL_CLOSED` | `true` | Groq AI down වුණොත් trade එක auto-block කරයි |
-| `BYBIT_TESTNET` | `true` | මුලින් Testnet එකේ test කරන්න (Mainnet යද්දී `false` කරන්න) |
-| `ALLOW_LIVE_TRADING` | `true` | Server-side live trading gate එක |
-| `AUTO_EXECUTE` | `false` | මුලින් manual test කරන්න (Testnet pass වුණාම `true` කරන්න) |
-
-### C. Risk Limits & Telegram (අවශ්‍ය නම්)
-| Variable Name | Default Value | විස්තරය |
-| :--- | :--- | :--- |
-| `MAX_RISK_PER_TRADE_PCT` | `0.02` | එක trade එකකට උපරිම risk එක (2%) |
-| `MAX_MARGIN_PCT` | `0.20` | එක trade එකකට උපරිම margin එක (20%) |
-| `MAX_DAILY_LOSS_PCT` | `5` | දවසකට උපරිම loss සීමාව (5%) |
-| `DAILY_PROFIT_TARGET_PCT` | `10` | දවසක profit lock සීමාව (10%) |
-| `TELEGRAM_BOT_TOKEN` | *(optional)* | Telegram Bot Token එක |
-| `TELEGRAM_CHAT_ID` | *(optional)* | Telegram Chat ID එක |
-
-> **වැදගත්:** Vercel Environment Variables වෙනස් කළාට පස්සේ **Deployments → Redeploy** කරන්න.
->
-> අලුත් Optional Vercel Environment Variables (අවශ්‍ය නම් පමණක්):
-|`ENABLE_PYRAMIDING`| =true (Pyramiding ON කරන්න නම් — default false)
-> |`DEAD_TRADE_HOURS`|=6 (Dead Trade Killer පැය ගණන — default 6)
-> |`MACRO_BLACKOUT_WINDOWS`|=FOMC|2026-12-16T19:00:00Z (Macro news blackout times)
----
-
-## පියවර 3: Test & Go-Live Checklist
-1. **Code & Tests Check**:
-   ```bash
-   npm run check
-   npm test
-
+| `SV_MODE` | *(unset = ON)* | `true` හෝ `false` (මෙය නොදැම්මොත් Telegram `⚡ SV Mode` button එකෙන් ON/OFF කළ හැක) |
+| `SV_PROFIT_TARGET_USDT` | `0.10` | Fixed profit cut target (USDT). Unset නම් balance අනුව auto scale වේ |
+| `SV_DAILY_TARGET_USDT` | `2.0` | දවසේ profit lock සීමාව |
+| `SV_PAPER_MODE` | `false` | `true` දැම්මොත් `$100` virtual balance එකක paper test කළ හැක |
+| `SV_MAX_TRADES_PER_HOUR` | `8` | පැයකට උපරිම trades ගණන |
+| `SV_MAX_HOLD_MIN` | `15` | Stagnant trade එකක් auto-close වන විනාඩි ගණන |
+| `SV_COINS` | `BTC,ETH,SOL,XRP,DOGE` | Scan කරන high-liquidity coins |
 
 ---
 
-## Update 25-26: Extra Environment Variables & Telegram Webhook Secret
-
-| Variable | Default | Purpose |
-| :--- | :--- | :--- |
-| `TELEGRAM_WEBHOOK_SECRET` | *(required for Telegram commands)* | Random string (A-Z a-z 0-9 _ -). Webhook rejects calls without it |
-| `MAX_CHASE_24H_PCT` | `10` | Skip coins that already moved more than this in 24h |
-| `MAX_LEVERAGE_CAP` | `8` | Global leverage hard cap |
-| `ALLOW_MEAN_REVERSION_FLIP` | `false` | Counter-trend flip (off by default) |
-| `MIN_AUTO_SCORE` | `0` | Raise the autopilot minimum score (floor is 80 strict / 70 balanced) |
-| `ENABLE_LIMIT_CHASE` | `false` | Re-enable chasing of drifting limit orders |
-| `LIMIT_MAX_AGE_MIN` | `30` | Cancel unfilled limit orders after N minutes |
-
-**Telegram webhook must be re-registered with the secret:**
-```bash
-curl "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
-  -d "url=https://<your-app>.vercel.app/api/telegram-webhook" \
-  -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+## Telegram Webhook Register කිරීම
+```text
+https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://<YOUR_VERCEL_DOMAIN>/api/telegram-webhook&secret_token=<TELEGRAM_WEBHOOK_SECRET>
 ```
-Without `TELEGRAM_WEBHOOK_SECRET` the webhook is fail-closed (ignores every command).
-
----
-
-## v14.1: Standalone SV Mode & EA Mode (Vercel Environment Variables)
-
-**Vercel Dashboard → Project → Settings → Environment Variables** වෙත ගොස් පහත keys අවශ්‍ය පරිදි add කර **Redeploy** කරන්න:
-
-| Variable Name | Value / Default | විස්තරය |
-| :--- | :--- | :--- |
-| `SV_MODE` | `true` / `false` | Standalone SV Micro-Scalping Engine ON/OFF (ON වුණාම Normal v6, EA Mode & Groq AI bypass වී SV Engine පමණක් run වේ. මෙය set කර නැත්නම් Telegram `⚡ SV Mode` button එකෙන් toggle කළ හැක) |
-| `EA_MODE` | `true` / `false` | EA Strategy Gate ON/OFF (`SV_MODE` OFF වෙලාවට පමණක් ක්‍රියාත්මක වේ. Set කර නැත්නම් Telegram/Dashboard button එකෙන් control වේ) |
-| `SV_PROFIT_TARGET_USDT` | `0.10` *(optional)* | Fixed profit cut target (USDT). Set නොකළොත් balance එක අනුව `$0.10` සිට auto scale වේ |
-| `SV_DAILY_TARGET_USDT` | `2.0` *(optional)* | දවසේ SV profit target lock එක |
-| `SV_PAPER_MODE` | `false` *(optional)* | `true` දැම්මොත් real මුදල් වෙනුවට `$100` virtual balance එකක SV strategy test කළ හැක |
-| `SV_MAX_TRADES_PER_HOUR` | `8` *(optional)* | පැයකට උපරිම SV trades ගණන |
-| `SV_MAX_HOLD_MIN` | `15` *(optional)* | Stagnant trade එකක් auto-close වන උපරිම විනාඩි ගණන |
-| `SV_SESSION_ONLY` | `false` *(optional)* | `true` දැම්මොත් London/NY sessions (07:00–21:00 UTC) වලදී පමණක් SV Mode active වේ |
-| `SV_MAKER_ENTRY` | `false` *(optional)* | `true` දැම්මොත් Post-Only Limit order හරහා Maker fee ඉතිරි කරයි |
-| `SV_PARTIAL_RUNNER` | `false` *(optional)* | `true` දැම්මොත් 70% profit cut කර ඉතිරි 30% breakeven SL runner ලෙස තබයි |
-| `SV_COINS` | `BTC,ETH,SOL,XRP,DOGE` | *(optional)* SV Mode scan කරන high-liquidity coins ලැයිස්තුව |
