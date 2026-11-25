@@ -1,6 +1,4 @@
-// File: api/futures-agent.js (v15.0 — SV MODE ONLY EDITION)
-// All other modes (Normal v6, EA Mode, Ultra Pro, Groq AI) have been removed for maximum stability.
-
+// File: api/futures-agent.js (v16.0 — SV ULTRA PRO EDITION)
 const {
   safeCompareSecret, isAuthBlocked, recordAuthFailure, clearAuthFailures,
   acquireLock, releaseLock, requireVerifiedRedis,
@@ -14,16 +12,10 @@ const {
 const svEngine = require('../lib/modules/svScalpEngine');
 const { sendTelegramAlert } = require('../lib/modules/telegramNotifier');
 
-const ENGINE_VERSION = 'v15.0-SV-ONLY';
+const ENGINE_VERSION = 'v16.0-SV-ULTRA-PRO';
 
 function makeResponse(ok, payload = {}, meta = {}) {
-  return {
-    ok,
-    engineVersion: ENGINE_VERSION,
-    timestamp: new Date().toISOString(),
-    ...meta,
-    ...payload
-  };
+  return { ok, engineVersion: ENGINE_VERSION, timestamp: new Date().toISOString(), ...meta, ...payload };
 }
 
 function isServerLiveAuthorized() {
@@ -43,9 +35,7 @@ function getClientIp(req) {
 function verifyAgentSecret(req) {
   const expected = (process.env.AGENT_SECRET || '').trim();
   const provided = String(
-    req.headers?.['x-agent-secret'] ||
-    req.body?.agentSecret ||
-    req.query?.agentSecret || ''
+    req.headers?.['x-agent-secret'] || req.body?.agentSecret || req.query?.agentSecret || ''
   ).trim();
   if (!expected) return { ok: false, reason: 'AGENT_SECRET not configured on server.' };
   if (!safeCompareSecret(provided, expected)) return { ok: false, reason: 'Invalid AGENT_SECRET.' };
@@ -59,28 +49,25 @@ module.exports = async (req, res) => {
     const body = (req.body && typeof req.body === 'object') ? req.body : {};
     const action = String(req.query?.action || body.action || 'health').trim().toLowerCase();
 
-    // 1. Public Health Check (used by GitHub Actions)
     if (action === 'health') {
       const redisOk = (await requireVerifiedRedis()).ok;
       return res.status(200).json(makeResponse(true, {
-        status: 'SV_ONLY_ONLINE',
-        mode: 'SV_STANDALONE',
+        status: 'SV_ULTRA_PRO_ONLINE',
+        mode: 'SV_ULTRA_PRO',
         redisOk,
-        svPaperMode: svEngine.isSvPaperMode(),
         autoExecute: isAutoExecuteEnabled(),
         liveAuthorized: isServerLiveAuthorized()
       }));
     }
 
-    // 2. Cron Guardian Tick (GitHub Actions / cron-job.org)
+    // Ultra Pro #10: 1-Minute Turbo Cron Tick (20s lock TTL)
     if (action === 'cron_tick') {
       if (isAuthBlocked(clientIp)) {
         return res.status(429).json(makeResponse(false, { error: 'Too many failed auth attempts.' }, { errorCode: 'RATE_LIMITED' }));
       }
       const expectedCron = (process.env.CRON_SECRET || '').trim();
       const providedCron = String(
-        req.headers?.['x-cron-secret'] ||
-        req.headers?.authorization?.replace(/^Bearer\s+/i, '') || ''
+        req.headers?.['x-cron-secret'] || req.headers?.authorization?.replace(/^Bearer\s+/i, '') || ''
       ).trim();
 
       if (!expectedCron || !safeCompareSecret(providedCron, expectedCron)) {
@@ -89,7 +76,7 @@ module.exports = async (req, res) => {
       }
       clearAuthFailures(clientIp);
 
-      const lock = await acquireLock('bybit_sv_cron_lock', 35000);
+      const lock = await acquireLock('bybit_sv_cron_lock', 20000);
       if (!lock.acquired) {
         return res.status(409).json(makeResponse(false, { error: lock.reason }, { errorCode: 'CRON_LOCKED' }));
       }
@@ -99,30 +86,24 @@ module.exports = async (req, res) => {
           getBotFilters().catch(() => ({})),
           getTradingHalted()
         ]);
-
         if (!svEngine.isSvModeActive(filters)) {
-          return res.status(200).json(makeResponse(true, {
-            svEngine: { ok: true, skipped: true, reason: 'SV_MODE is OFF' }
-          }));
+          return res.status(200).json(makeResponse(true, { svEngine: { ok: true, skipped: true, reason: 'SV_MODE is OFF' } }));
         }
-
         const svRes = await svEngine.runSvCycle({
           halted: Boolean(haltedState.halted),
           autoExecute: isAutoExecuteEnabled(),
           liveAuthorized: isServerLiveAuthorized()
         });
-
         if (svRes?.wallet?.totalEquity != null) {
           await recordEquitySnapshot(svRes.wallet.totalEquity).catch(() => {});
         }
-
         return res.status(200).json(makeResponse(true, { svEngine: svRes }));
       } finally {
         await releaseLock('bybit_sv_cron_lock', lock.token).catch(() => {});
       }
     }
 
-    // 3. Dashboard / Manual Protected Actions (Require AGENT_SECRET)
+    // Protected Dashboard Actions
     if (isAuthBlocked(clientIp)) {
       return res.status(429).json(makeResponse(false, { error: 'Too many failed auth attempts. Try again in 10 minutes.' }, { errorCode: 'RATE_LIMITED' }));
     }
@@ -134,34 +115,51 @@ module.exports = async (req, res) => {
     clearAuthFailures(clientIp);
 
     if (action === 'status') {
-      const [acct, filters, halted, svStats, pnlStats, journal] = await Promise.all([
+      const [acct, filters, halted, svStats, pnlStats, journal, heatmap] = await Promise.all([
         fetchBybitWalletAndPositions(),
         getBotFilters().catch(() => ({})),
         getTradingHalted(),
         svEngine.getSvDailyStats(),
         fetchBybitClosedPnlStats(30).catch(() => ({ recent: [], winRate: 0, wins: 0, losses: 0, netPnl: 0 })),
-        getJournalEntries().catch(() => [])
+        getJournalEntries().catch(() => []),
+        svEngine.getSvHeatmap().catch(() => ({ btc1mMovePct: 0, rows: [] }))
       ]);
 
+      const preset = svEngine.getSvPresetConfig(filters);
       return res.status(200).json(makeResponse(true, {
         svActive: svEngine.isSvModeActive(filters),
-        svPaperMode: svEngine.isSvPaperMode(),
-        svEnvLock: String(process.env.SV_MODE || '').trim() || null,
+        svPreset: preset.key,
+        svPresetLabel: preset.label,
         autoExecute: isAutoExecuteEnabled(),
         liveAuthorized: isServerLiveAuthorized(),
         halted: Boolean(halted.halted),
         svStats,
         pnlStats,
+        heatmap,
         journal: (journal || []).slice(-25).reverse(),
         ...acct
       }));
     }
 
-    if (action === 'run_sv_now') {
-      const lock = await acquireLock('bybit_sv_cron_lock', 35000);
-      if (!lock.acquired) {
-        return res.status(409).json(makeResponse(false, { error: lock.reason }));
+    if (action === 'sv_heatmap') {
+      const heatmap = await svEngine.getSvHeatmap();
+      return res.status(200).json(makeResponse(true, { heatmap }));
+    }
+
+    if (action === 'set_sv_preset') {
+      const reqPreset = String(body.preset || 'pro').trim().toLowerCase();
+      if (!svEngine.SV_PRESETS[reqPreset]) {
+        return res.status(400).json(makeResponse(false, { error: 'Invalid preset. Use safe, pro, or turbo.' }));
       }
+      const current = (await getBotFilters().catch(() => ({}))) || {};
+      await setBotFilters({ ...current, svPreset: reqPreset });
+      await appendJournalEntry({ type: 'UI_SV_PRESET_CHANGE', svPreset: reqPreset });
+      return res.status(200).json(makeResponse(true, { svPreset: reqPreset, svPresetLabel: svEngine.SV_PRESETS[reqPreset].label }));
+    }
+
+    if (action === 'run_sv_now') {
+      const lock = await acquireLock('bybit_sv_cron_lock', 20000);
+      if (!lock.acquired) return res.status(409).json(makeResponse(false, { error: lock.reason }));
       try {
         const [filters, haltedState] = await Promise.all([
           getBotFilters().catch(() => ({})),
@@ -184,9 +182,7 @@ module.exports = async (req, res) => {
     if (action === 'toggle_sv_mode') {
       const envLock = String(process.env.SV_MODE || '').trim().toLowerCase();
       if (envLock === 'true' || envLock === 'false') {
-        return res.status(400).json(makeResponse(false, {
-          error: `SV_MODE is locked to ${envLock.toUpperCase()} via Vercel Environment Variables.`
-        }));
+        return res.status(400).json(makeResponse(false, { error: `SV_MODE is locked to ${envLock.toUpperCase()} via Vercel Env.` }));
       }
       const current = (await getBotFilters().catch(() => ({}))) || {};
       const nextVal = typeof body.svMode === 'boolean' ? body.svMode : !svEngine.isSvModeActive(current);
@@ -199,7 +195,7 @@ module.exports = async (req, res) => {
       await setTradingHalted(true);
       const stopRes = await executeLiveEmergencyStop();
       await appendJournalEntry({ type: 'UI_EMERGENCY_STOP', ...stopRes });
-      await sendTelegramAlert(`🚨 <b>SV EMERGENCY STOP (Dashboard)</b>\nClosed ${stopRes.closedCount} positions. Trading HALTED.`);
+      await sendTelegramAlert(`🚨 <b>SV ULTRA PRO EMERGENCY STOP</b>\nClosed ${stopRes.closedCount} positions. Trading HALTED.`);
       return res.status(200).json(makeResponse(true, { halted: true, ...stopRes }));
     }
 
