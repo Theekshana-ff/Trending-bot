@@ -1,8 +1,8 @@
 {
-  "name": "bybit-sv-mode-only-bot",
-  "version": "15.0.0",
+  "name": "bybit-sv-ultra-pro-bot",
+  "version": "16.0.0",
   "private": true,
-  "description": "Bybit V5 Standalone SV Micro-Scalping Bot (v15.0 \u2014 SV Mode Only, 100% Auto Leverage & Margin)",
+  "description": "Bybit V5 SV ULTRA PRO Bot (v16.0 \u2014 $2x18x High-Speed Micro-Scalping, Maker-First, Power Presets, Live Heatmap)",
   "engines": {
     "node": "22.x"
   },

@@ -1,55 +1,18 @@
-# Bybit V5 — SV MODE ONLY Bot (v15.0)
+# Bybit V5 — SV ULTRA PRO Bot (v16.0)
 
-මෙය **Bybit V5 Linear Futures** සඳහා **SV Mode පමණක්** ක්‍රියාත්මක වන පිරිසිදු **Standalone 1m/3m Micro-Scalping Bot** එකකි.
-අනෙකුත් සියලුම modes (Normal v6, EA Mode, Ultra Pro, Groq AI) සම්පූර්ණයෙන්ම ඉවත් කර ඇති නිසා කිසිදු mode conflict එකක් ඇති නොවේ.
+**SV Mode Only — Ultra Pro v16.0** (`$2 Margin × 18x Leverage → $0.10 Net Cut` default Pro preset)
 
----
-
-## ප්‍රධාන විශේෂාංග (SV Mode Only)
-- **100% Auto Leverage & Auto Margin:** Balance එක සහ 1m volatility අනුව ඉබේම ආරක්ෂිත leverage (`3x–8x`) සහ margin ගණනය වේ.
-- **Net-of-Fee Profit Cut (`$0.10`+):** Bybit fees කැපුණාට පසු ශුද්ධ `$0.10` (හෝ balance-scaled target) ලැබෙන ගාණටම Exchange-level Auto TP තබයි; profit cut වූ වහාම ඊළඟ හොඳම trade එක open කරයි.
-- **All 40 SV Micro-Scalping Updates:** 1m/3m EMA 9/21 + VWAP, Fast RSI(7) + StochRSI, Heikin Ashi smoothing, Bollinger Bounce, 1m FVG Tap, OBI Micro-Burst, Micro-Spread Guard, BTC 1m Pulse Sync, BTC Flash Emergency Exit, 5m Same-Coin Cooldown, 3-Loss 30m Brake, Daily Target Lock, සහ Telegram Control Panel.
-
----
-
-## Vercel Environment Variables
-
-**Vercel Dashboard → Project → Settings → Environment Variables** වෙත ගොස් පහත keys set කර **Redeploy** කරන්න:
-
-### A. අනිවාර්ය Keys (Core)
-| Variable Name | විස්තරය |
-| :--- | :--- |
-| `AGENT_SECRET` | Dashboard login password එක |
-| `CRON_SECRET` | GitHub Actions / cron-job.org secret එක |
-| `BYBIT_API_KEY` | Bybit V5 API Key (Contract Orders & Positions) |
-| `BYBIT_API_SECRET` | Bybit V5 API Secret |
-| `UPSTASH_REDIS_REST_URL` | Upstash Redis URL |
-| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis Token |
-| `ALLOW_LIVE_TRADING` | `true` (Live trading gate) |
-| `AUTO_EXECUTE` | `true` (Auto scalping ON කිරීමට) |
-| `BYBIT_TESTNET` | `false` (Mainnet) හෝ `true` (Testnet) |
-
-### B. Telegram Keys
-| Variable Name | විස්තරය |
-| :--- | :--- |
-| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token එක |
-| `TELEGRAM_CHAT_ID` | ඔයාගේ Telegram Chat ID එක |
-| `TELEGRAM_WEBHOOK_SECRET` | Webhook security secret token එක (Fail-closed) |
-
-### C. SV Mode Controls (Optional)
-| Variable Name | Default | විස්තරය |
-| :--- | :--- | :--- |
-| `SV_MODE` | *(unset = ON)* | `true` හෝ `false` (මෙය නොදැම්මොත් Telegram `⚡ SV Mode` button එකෙන් ON/OFF කළ හැක) |
-| `SV_PROFIT_TARGET_USDT` | `0.10` | Fixed profit cut target (USDT). Unset නම් balance අනුව auto scale වේ |
-| `SV_DAILY_TARGET_USDT` | `2.0` | දවසේ profit lock සීමාව |
-| `SV_PAPER_MODE` | `false` | `true` දැම්මොත් `$100` virtual balance එකක paper test කළ හැක |
-| `SV_MAX_TRADES_PER_HOUR` | `8` | පැයකට උපරිම trades ගණන |
-| `SV_MAX_HOLD_MIN` | `15` | Stagnant trade එකක් auto-close වන විනාඩි ගණන |
-| `SV_COINS` | `BTC,ETH,SOL,XRP,DOGE` | Scan කරන high-liquidity coins |
-
----
-
-## Telegram Webhook Register කිරීම
-```text
-https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://<YOUR_VERCEL_DOMAIN>/api/telegram-webhook&secret_token=<TELEGRAM_WEBHOOK_SECRET>
-```
+## Ultra Pro v16.0 Upgrades
+1. **High-Speed Auto-Leverage Ladder (`12x–18x`)** — Auto-adjusts by 1m volatility.
+2. **Smart Maker-First Entry (`SV_MAKER_ENTRY=true`)** — PostOnly Limit order at Best Bid/Ask (saves ~60% fees) with instant Market IOC fallback.
+3. **One-Tap Power Presets (`/sv_preset` & Dashboard):**
+   - `🐢 Safe` ($1.5 / 6x–10x / $0.10 net)
+   - `⚡ Pro` ($2.0 / 12x–18x / $0.10 net — Default)
+   - `🔥 Turbo` ($3.0 / 14x–20x / $0.12 net)
+4. **Step-Trailing Profit Lock:** `+$0.06` → SL to BE (`+$0.01`); `+$0.09` → SL to `+$0.05`.
+5. **Anti-Wick Liquidation Shield:** Hard Exchange SL within `1.0%–1.2%` & max `$0.35` (Pro).
+6. **Smart Recovery Leverage:** Drops to `10x` after a loss, returns to `18x` on win.
+7. **Auto-Compounding SV Margin:** Scales `$2` margin up automatically as balance grows.
+8. **Live SV 1m Coin Heatmap** on Dashboard & Telegram (`/heatmap`).
+9. **Daily Gross vs Fees vs Net Report** in `/sv_status` & end-of-day Telegram alert.
+10. **1-Minute Turbo Cron Optimization** (20s lock TTL for `cron-job.org` 1m triggers).

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Bybit SV Mode Only Bot (v15.0)</title>
+  <title>Bybit SV ULTRA PRO Bot (v16.0)</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body { background: #070b14; color: #e2e8f0; font-family: ui-sans-serif, system-ui, sans-serif; }
@@ -12,15 +12,16 @@
   </style>
 </head>
 <body class="min-h-screen p-3 sm:p-6">
-  <div class="max-w-4xl mx-auto space-y-4">
+  <div class="max-w-5xl mx-auto space-y-4">
     <header class="card p-4 flex flex-wrap items-center justify-between gap-3">
       <div>
         <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
-          ⚡ BYBIT SV MODE ONLY BOT <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 mono">v15.0</span>
+          ⚡ BYBIT SV ULTRA PRO BOT <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 mono">v16.0</span>
         </h1>
-        <p class="text-xs text-slate-400 mono mt-0.5">Standalone 1m/3m Micro-Scalping · 100% Auto Leverage & Margin · Net-of-Fee Profit Cut</p>
+        <p class="text-xs text-slate-400 mono mt-0.5">$2 × 18x High-Speed Micro-Scalping · Maker-First Fee Saver · Step-Trailing · Shield SL</p>
       </div>
       <div class="flex items-center gap-2">
+        <span id="badge-preset" class="text-xs px-2.5 py-1 rounded-full bg-purple-500/20 text-purple-300 mono">⚡ Pro ($2/18x)</span>
         <span id="badge-sv" class="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 mono">SV: --</span>
         <span id="badge-live" class="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 mono">GATE: --</span>
       </div>
@@ -36,8 +37,9 @@
         <div id="stat-equity" class="text-xl font-bold text-sky-400 mono mt-1">$0.00</div>
       </div>
       <div class="card p-3">
-        <div class="text-[10px] uppercase text-slate-400 mono">SV Today Net PnL</div>
+        <div class="text-[10px] uppercase text-slate-400 mono">SV Net PnL (Gross / Fee)</div>
         <div id="stat-sv-pnl" class="text-xl font-bold text-white mono mt-1">$0.000</div>
+        <div id="stat-sv-sub" class="text-[10px] text-slate-400 mono">Gross $0.000 · Fee -$0.000</div>
       </div>
       <div class="card p-3">
         <div class="text-[10px] uppercase text-slate-400 mono">SV Cuts / Win Rate</div>
@@ -51,13 +53,41 @@
           class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mono text-white focus:outline-none focus:border-sky-500" />
         <button id="btn-sync" class="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold mono">🔄 Sync Bybit</button>
       </div>
-      <div class="flex flex-wrap gap-2">
-        <button id="btn-run-sv" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold mono">▶️ Run SV Scan & Trade Now</button>
-        <button id="btn-toggle-sv" class="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold mono">⚡ Toggle SV Mode</button>
-        <button id="btn-resume" class="px-4 py-2 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold mono">✅ Resume</button>
-        <button id="btn-stop" class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold mono ml-auto">🚨 Emergency Stop & Close All</button>
+      <div class="flex flex-wrap items-center gap-2">
+        <button id="btn-run-sv" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold mono">▶️ Run SV Now</button>
+        <button id="btn-toggle-sv" class="px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold mono">⚡ Toggle SV</button>
+        <button data-preset="safe" class="preset-btn px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold mono">🐢 Safe ($1.5/10x)</button>
+        <button data-preset="pro" class="preset-btn px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold mono">⚡ Pro ($2/18x)</button>
+        <button data-preset="turbo" class="preset-btn px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold mono">🔥 Turbo ($3/20x)</button>
+        <button id="btn-resume" class="px-3 py-2 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold mono">✅ Resume</button>
+        <button id="btn-stop" class="px-3 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold mono ml-auto">🚨 Stop All</button>
       </div>
       <div id="status-msg" class="text-xs mono text-slate-400">Enter password and click Sync Bybit.</div>
+    </section>
+
+    <section class="card p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-xs font-bold uppercase tracking-wider text-amber-400 mono">🔥 LIVE SV 1m COIN HEATMAP</h2>
+        <span id="btc-pulse-badge" class="text-[11px] mono text-slate-400">BTC 1m: --%</span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs mono">
+          <thead class="text-slate-400 border-b border-slate-800">
+            <tr>
+              <th class="py-1.5 pr-3">Coin</th>
+              <th class="py-1.5 pr-3">Price</th>
+              <th class="py-1.5 pr-3">Direction</th>
+              <th class="py-1.5 pr-3">Score</th>
+              <th class="py-1.5 pr-3">Spread</th>
+              <th class="py-1.5 pr-3">OBI</th>
+              <th class="py-1.5">Status</th>
+            </tr>
+          </thead>
+          <tbody id="heatmap-body" class="divide-y divide-slate-800/60">
+            <tr><td colspan="7" class="py-3 text-slate-500">Click Sync Bybit to load live 1m heatmap.</td></tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <section class="card p-4">
@@ -67,10 +97,10 @@
 
     <section class="card p-4">
       <div class="flex items-center justify-between mb-2">
-        <h2 class="text-xs font-bold uppercase tracking-wider text-emerald-400 mono">📜 LIVE SV TERMINAL & JOURNAL</h2>
+        <h2 class="text-xs font-bold uppercase tracking-wider text-emerald-400 mono">📜 LIVE SV ULTRA PRO TERMINAL</h2>
         <button id="btn-clear-log" class="text-[10px] text-slate-400 hover:text-white mono">Clear</button>
       </div>
-      <div id="terminal-logs" class="bg-slate-950 border border-slate-800 rounded-lg p-3 h-56 overflow-y-auto text-[11px] mono space-y-1 text-slate-300"></div>
+      <div id="terminal-logs" class="bg-slate-950 border border-slate-800 rounded-lg p-3 h-52 overflow-y-auto text-[11px] mono space-y-1 text-slate-300"></div>
     </section>
   </div>
   <script src="agent.js"></script>
