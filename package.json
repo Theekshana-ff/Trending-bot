@@ -1,13 +1,13 @@
 {
-  "name": "bybit-sv-ultra-pro-bot",
-  "version": "16.0.0",
-  "private": true,
-  "description": "Bybit V5 SV ULTRA PRO Bot (v16.0 \u2014 $2x18x High-Speed Micro-Scalping, Maker-First, Power Presets, Live Heatmap)",
-  "engines": {
-    "node": "22.x"
-  },
+  "name": "trending-bot-sv-ultra-pro-v18",
+  "version": "18.1.0",
+  "description": "Drop-in Compatible Bybit SV Ultra Pro v18.1 (FAST Margin/Leverage + SAFE Trend + Old Telegram Menu)",
+  "type": "module",
   "scripts": {
-    "check": "node --check api/futures-agent.js && node --check api/telegram-webhook.js && node --check agent.js && node --check lib/modules/marketData.js && node --check lib/modules/indicators.js && node --check lib/modules/riskAndValidation.js && node --check lib/modules/profitEngine.js && node --check lib/modules/securityAndState.js && node --check lib/modules/bybitLiveClient.js && node --check lib/modules/bybitEaHelpers.js && node --check lib/modules/telegramNotifier.js && node --check lib/modules/telegramAlerts.js && node --check lib/modules/svScalpEngine.js && node --check tests/run-tests.js",
-    "test": "node tests/run-tests.js"
+    "check": "node --check api/futures-agent.js && node --check api/telegram.js && node --check lib/bybitClient.js && node --check lib/securityAndState.js && node --check lib/strategyV18.js && node --check lib/riskGuardian.js && node --check lib/telegram.js",
+    "test": "node --test tests/v18.test.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }
